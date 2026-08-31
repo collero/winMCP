@@ -201,8 +201,18 @@ def _decode_item_url(item_url: Any) -> str | None:
     if not item_url:
         return None
     decoded = unquote(str(item_url))
-    if decoded.lower().startswith("file:///"):
-        decoded = decoded[len("file:///") :]
+    if decoded.lower().startswith("file:"):
+        # The live index emits `file:C:/...` — NO slashes after the colon
+        # (BUG-006 round 2, file_write/0069: only the `file:///` form was
+        # stripped, the `file:` residue survived into `alt_url_path`, and
+        # containment rejected every streamed row). Strip the scheme plus
+        # any number of leading slashes when a drive-letter path remains;
+        # anything else (e.g. a `file://server/share` UNC) is left as-is
+        # rather than mangled — allowed roots are local drives only.
+        rest = decoded[len("file:") :]
+        stripped = rest.lstrip("/")
+        if len(stripped) >= 2 and stripped[1] == ":":
+            decoded = stripped
     return decoded.replace("/", "\\")
 
 
@@ -357,6 +367,10 @@ class WindowsSearchAdapter:
         while not recordset.EOF:
             results.append(_row_to_summary(recordset))
             recordset.MoveNext()
+        # Same cap-filled-means-maybe-more rule as PowerShellSearchBridge
+        # (BUG-006 round 2) — ADO reads to EOF, so this is the only
+        # truncation this transport can experience.
+        self.last_search_truncated = len(results) >= top_n
         return results
 
     def get_info(self, path_or_url: str) -> FileDetail:
@@ -681,7 +695,12 @@ class PowerShellSearchBridge:
     ) -> list[FileSummary]:
         sql = _build_search_sql(filename, phrase, roots, top_n)
         rows, truncated = self._invoke(sql)
-        self.last_search_truncated = truncated
+        # A result set that FILLS the SQL TOP cap may have more matches
+        # behind it (BUG-006 round 2, file_write/0069's flag-disagreement
+        # finding) — report that as truncation too, not only a broken
+        # stream, so a cap-filled set that later filters to [] still
+        # tells the caller there was more to consider.
+        self.last_search_truncated = truncated or len(rows) >= top_n
         return [_row_from_mapping(row, detail=False) for row in rows]
 
     def get_info(self, path_or_url: str) -> FileDetail:

@@ -1996,3 +1996,104 @@ def test_bridge_last_search_truncated_starts_false_before_any_call():
     bridge = PowerShellSearchBridge()
 
     assert bridge.last_search_truncated is False
+
+
+# --- BUG-006 round 2 (file_write/0069, live-reproduced 2026-08-31): the
+# index emits System.ItemUrl as `file:C:/...` — NO slashes after the
+# colon — while _decode_item_url only stripped the `file:///` form. The
+# residue kept the `file:` prefix glued to alt_url_path, containment
+# rejected every row, and 200 streamed rows became a clean []. The URL
+# form below is VERBATIM from the live PRO probe at 13:39Z.
+
+
+def test_decode_item_url_handles_slashless_file_prefix():
+    from tools.file_search_adapter import _decode_item_url
+
+    assert (
+        _decode_item_url("file:C:/co/OneDrive%20-%20Informa/notes.txt")
+        == "C:\\co\\OneDrive - Informa\\notes.txt"
+    )
+
+
+def test_decode_item_url_still_handles_triple_slash_form():
+    from tools.file_search_adapter import _decode_item_url
+
+    assert (
+        _decode_item_url("file:///C:/co/OneDrive%20-%20Informa/notes.txt")
+        == "C:\\co\\OneDrive - Informa\\notes.txt"
+    )
+
+
+def test_bridge_row_with_slashless_file_url_gets_containable_alt_path(mocker):
+    """The live defect end-to-end at the adapter seam: alias display path
+    plus the slashless URL form must yield a NATIVE alt_url_path that
+    containment can match — never a string still carrying `file:`."""
+    from tools.file_search_adapter import PowerShellSearchBridge
+
+    row = {
+        "ItemName": "Powerpoint_Informa-ENG_v26.potx",
+        "ItemPathDisplay": "C:\\Documents\\OneDrive - Informa\\Powerpoint_Informa-ENG_v26.potx",
+        "ItemUrl": "file:C:/co/OneDrive%20-%20Informa/Powerpoint_Informa-ENG_v26.potx",
+        "Size": 10,
+        "DateModified": "2026-01-01T00:00:00",
+        "Kind": None,
+        "FileExtension": ".potx",
+    }
+    _patch_popen(mocker, stdout_lines=_row_lines([row]))
+
+    bridge = PowerShellSearchBridge()
+    results = bridge.search(filename=None, phrase="Informa", roots=["C:\\co"], top_n=200)
+
+    assert results[0].alt_url_path == "C:\\co\\OneDrive - Informa\\Powerpoint_Informa-ENG_v26.potx"
+
+
+# --- BUG-006 round 2, second defect (file_write/0069): a result set that
+# FILLS the SQL TOP cap may have more matches behind it — both transports
+# must report last_search_truncated, not just a broken bridge stream.
+
+
+def test_bridge_search_filling_top_cap_sets_last_search_truncated(mocker):
+    from tools.file_search_adapter import PowerShellSearchBridge
+
+    rows = [
+        {
+            "ItemName": f"f{i}.txt",
+            "ItemPathDisplay": f"C:\\co\\f{i}.txt",
+            "ItemUrl": f"file:C:/co/f{i}.txt",
+            "Size": 1,
+            "DateModified": "2026-01-01T00:00:00",
+            "Kind": None,
+            "FileExtension": ".txt",
+        }
+        for i in range(3)
+    ]
+    _patch_popen(mocker, stdout_lines=_row_lines(rows))
+
+    bridge = PowerShellSearchBridge()
+    results = bridge.search(filename=None, phrase="x", roots=["C:\\co"], top_n=3)
+
+    assert len(results) == 3
+    assert bridge.last_search_truncated is True
+
+
+def test_bridge_search_below_top_cap_stays_untruncated(mocker):
+    from tools.file_search_adapter import PowerShellSearchBridge
+
+    rows = [
+        {
+            "ItemName": "f.txt",
+            "ItemPathDisplay": "C:\\co\\f.txt",
+            "ItemUrl": "file:C:/co/f.txt",
+            "Size": 1,
+            "DateModified": "2026-01-01T00:00:00",
+            "Kind": None,
+            "FileExtension": ".txt",
+        }
+    ]
+    _patch_popen(mocker, stdout_lines=_row_lines(rows))
+
+    bridge = PowerShellSearchBridge()
+    results = bridge.search(filename=None, phrase="x", roots=["C:\\co"], top_n=3)
+
+    assert len(results) == 1
+    assert bridge.last_search_truncated is False
