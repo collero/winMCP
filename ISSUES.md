@@ -205,3 +205,36 @@
 - **Not touched tonight** (experiment-eve discipline): mail_write_draft
   follows the existing `_to_aware` convention; investigation is a
   post-morning-read item with cowork.
+
+## BUG-010 — Outlook COM datetimes are LOCAL wall-clock mislabeled UTC; poisons output timestamps AND date-window rechecks (OPEN, root-caused 2026-08-31; fix post-morning-read)
+
+- **Reported**: mail/0001 (cowork, first use of tool 17): draft savedAt/date
+  read 17:25Z at a true 15:25Z; drafts search empty under every filter.
+- **Root cause (live-discriminated, three probes)**: Outlook COM item
+  date properties (ReceivedTime/SentOn/LastModificationTime) return LOCAL
+  wall-clock; pywin32 wraps them tzinfo-"UTC". Ground truth: inbox item
+  ReceivedTime 13:43 "Z" vs PR_MESSAGE_DELIVERY_TIME (true UTC) 12:43 —
+  winter message, 1h delta; today's drafts show 2h. STORED values are
+  correct; the READ label is wrong. Supersedes ENH-005 (same phenomenon,
+  now confirmed + blast radius known).
+- **Why drafts search returns empty (defect 2 = defect 1's blast radius)**:
+  a fresh draft's ReceivedTime is POPULATED (not the 4501 sentinel — that
+  sits in SentOn) with the mislabeled local value, so `_resolve_date` +
+  `_matches_date_bounds` see it 2h in the FUTURE and every tool-layer
+  window (dateTo filled with now-UTC) excludes it. DASL Restrict on
+  PT_SYSTIME compares in true UTC (correct frame), so explicit windows
+  fail at Restrict instead. One layer or the other eats every draft.
+- **Headline blast radius**: ANY mail item younger than the UTC offset is
+  invisible to now-bounded `mail_search` windows — inbox included. All
+  returned mail timestamps are off by the offset. Calendar/task adapters
+  share the `_to_aware` pattern and likely the mislabel — verify.
+- **Fix sketch (tomorrow, with cowork's boundary verification)**: one
+  reinterpretation helper at every COM datetime read: strip the false
+  UTC label, attach `local_timezone()`, keep aware — output becomes
+  RFC3339-true (+02:00), python rechecks compare correctly; Restrict
+  literals stay caller-UTC (already correct frame for PT_SYSTIME; verify
+  urn:schemas frames). Regression: cowork's self-checking-fixture pattern
+  (draft body carries its own `date -u` ground truth).
+- **4501-01-01 sentinel**: unset COM dates (e.g. a draft's SentOn) are a
+  TRUTHY pywintypes datetime, not None — `_resolve_date`'s falsy check
+  is a latent trap; guard explicitly when fixing.
