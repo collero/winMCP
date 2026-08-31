@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import types
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -505,7 +505,7 @@ def test_get_info_returns_detail_for_matching_row(mocker):
     assert detail.path == "C:\\Users\\ana\\Documents\\report.docx"
     assert detail.name == "report.docx"
     assert detail.size == 2048
-    assert detail.created_time == datetime(2025, 12, 1)
+    assert detail.created_time == datetime(2025, 12, 1, tzinfo=timezone.utc)
     assert detail.snippet == "Quarterly report summary"
     # Defensive case: some providers/rows may still hand back System.Kind
     # as a plain string rather than a VT_VECTOR tuple — must pass through.
@@ -1463,7 +1463,7 @@ def test_bridge_search_happy_path_sentinel_returns_rows_not_truncated(mocker):
     assert results[0].path == "C:\\Users\\ana\\Documents\\report.docx"
     assert results[0].name == "report.docx"
     assert results[0].size == 4096
-    assert results[0].last_modified == datetime(2026, 2, 1)
+    assert results[0].last_modified == datetime(2026, 2, 1, tzinfo=timezone.utc)
     assert results[0].kind == "document; picture"
     assert results[0].extension == ".docx"
     assert bridge.last_search_truncated is False
@@ -1517,7 +1517,7 @@ def test_bridge_get_info_parses_valid_json_row_into_file_detail(mocker):
 
     assert isinstance(detail, FileDetail)
     assert detail.path == "C:\\Users\\ana\\Documents\\report.docx"
-    assert detail.created_time == datetime(2025, 12, 1)
+    assert detail.created_time == datetime(2025, 12, 1, tzinfo=timezone.utc)
     assert detail.snippet == "Quarterly report summary"
 
 

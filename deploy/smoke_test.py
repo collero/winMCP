@@ -66,6 +66,7 @@ _DEFAULT_ALL_TOOLS = {
     "task_get_task",
     "mail_search",
     "mail_get_message",
+    "mail_write_draft",
     "file_search",
     "file_get_info",
     "onenote_search",

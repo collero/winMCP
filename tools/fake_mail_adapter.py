@@ -29,9 +29,9 @@ the real adapter's `HTMLBody` read will (Phase 4): populated only when
 `include_html=True`, `None` otherwise. `attachment_names` is always
 returned as seeded — no gating.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
-from models.schemas import MailFolder, MessageDetail, MessageSummary
+from models.schemas import DraftDetail, MailFolder, MessageDetail, MessageSummary
 from tools.errors import MailFolderNotFoundError, MessageNotFoundError, OutlookUnavailableError
 
 
@@ -126,6 +126,40 @@ class FakeMailAdapter:
         else:
             haystack = f"{message.sender} {message.sender_address}".lower()
         return needle in haystack
+
+    def create_draft(
+        self, to: list[str], cc: list[str], subject: str, body: str
+    ) -> DraftDetail:
+        """Store the draft as a real member of the fake's drafts folder —
+        so `mail_search(folder="drafts")` finds it, mirroring what
+        Outlook's Save() does — and return its `DraftDetail`. Never
+        touches inbox/sent; nothing here (or anywhere) sends."""
+        if self._unavailable:
+            raise OutlookUnavailableError(
+                "Outlook is not available (fake adapter configured to fail)"
+            )
+        entry_id = f"FAKE-DRAFT-{len(self._folders[MailFolder.DRAFTS]) + 1}"
+        saved_at = datetime.now(timezone.utc)
+        self._folders[MailFolder.DRAFTS].append(
+            MessageDetail(
+                entry_id=entry_id,
+                subject=subject,
+                sender="",
+                sender_address="",
+                date=saved_at,
+                has_attachments=False,
+                body=body,
+                to=list(to),
+            )
+        )
+        return DraftDetail(
+            entry_id=entry_id,
+            subject=subject,
+            to=list(to),
+            cc=list(cc),
+            body=body,
+            saved_at=saved_at,
+        )
 
     def get_message(self, entry_id: str, include_html: bool = False) -> MessageDetail:
         if self._unavailable:

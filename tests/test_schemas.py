@@ -687,3 +687,47 @@ def test_update_page_request_expected_last_modified_is_optional():
     request = UpdatePageRequest(pageId="PAGE-1", bodyText="Cuerpo actualizado.")
 
     assert request.expected_last_modified is None
+
+
+# --- BUG-006 round 3 (file_write/0073): the PowerShell bridge's phrase leg
+# delivers UTC-NAIVE datetimes (live-verified against os.stat, DST-proof
+# across April/October files), which serialize without an offset and fail
+# the MCP output schema's RFC 3339 date-time format — every row rejected
+# AT the boundary. FileSummary/FileDetail coerce naive datetimes to
+# UTC-aware so every route serializes with an offset.
+from models.schemas import FileDetail, FileSummary
+
+
+def test_file_summary_naive_last_modified_coerced_to_utc():
+    row = FileSummary(
+        path="C:\\co\\f.txt",
+        name="f.txt",
+        size=1,
+        last_modified=datetime(2026, 8, 31, 10, 48, 49),  # naive — live bridge shape
+    )
+
+    assert row.last_modified.tzinfo is not None
+    assert row.last_modified.utcoffset().total_seconds() == 0
+    serialized = row.model_dump_json(by_alias=True)
+    assert '"lastModified":"2026-08-31T10:48:49Z"' in serialized or (
+        '"lastModified":"2026-08-31T10:48:49+00:00"' in serialized
+    )
+
+
+def test_file_summary_aware_last_modified_passes_through_unchanged():
+    aware = datetime(2026, 6, 2, 16, 2, 15, 997588, tzinfo=timezone.utc)
+    row = FileSummary(path="C:\\co\\f.txt", name="f.txt", size=1, last_modified=aware)
+
+    assert row.last_modified == aware
+
+
+def test_file_detail_naive_created_time_coerced_to_utc():
+    detail = FileDetail(
+        path="C:\\co\\f.txt",
+        name="f.txt",
+        size=1,
+        last_modified=datetime(2026, 8, 31, 10, 48, 49),
+        created_time=datetime(2026, 8, 30, 9, 0, 0),
+    )
+
+    assert detail.created_time.utcoffset().total_seconds() == 0

@@ -19,7 +19,7 @@ import yaml
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-from models.schemas import EventDetail, FileDetail, PageDetail
+from models.schemas import EventDetail, FileDetail, MailFolder, PageDetail
 from tools.fake_adapter import FakeCalendarAdapter
 from tools.fake_file_search_adapter import FakeFileSearchAdapter
 from tools.fake_mail_adapter import FakeMailAdapter
@@ -35,6 +35,7 @@ _ALL_TOOL_NAMES = {
     "task_get_task",
     "mail_search",
     "mail_get_message",
+    "mail_write_draft",
     "file_search",
     "file_get_info",
     "onenote_search",
@@ -1331,7 +1332,7 @@ def test_import_succeeds_with_mail_absent_and_other_families_still_register():
     finally:
         importlib.reload(server)
 
-    assert names == _ALL_TOOL_NAMES - {"mail_search", "mail_get_message"}
+    assert names == _ALL_TOOL_NAMES - {"mail_search", "mail_get_message", "mail_write_draft"}
 
 
 def test_create_server_shipped_none_falls_back_to_installed_only_today_behavior():
@@ -1681,3 +1682,68 @@ def test_onenote_list_pages_tool_returns_section_pages_via_fake_adapter():
     assert [row["pageId"] for row in rows] == ["PAGE-COS"]
     assert rows[0]["notebookName"] == "z - Test Notebook"
     assert rows[0]["sectionName"] == "New Section 1"
+
+
+def test_mail_write_draft_tool_creates_draft_via_fake_adapter():
+    """End-to-end mail_write_draft call via FastMCP's in-process Client
+    (add-mail-write-draft change): the draft lands in the fake's drafts
+    folder and the response carries the new entryId. The server exposes
+    NO send capability — saving to Drafts for human review is the whole
+    write surface."""
+    import server
+
+    fake_mail = FakeMailAdapter()
+    app = server.create_server(mail_adapter=fake_mail)
+
+    async def _call():
+        async with Client(app) as client:
+            return await client.call_tool(
+                "mail_write_draft",
+                {
+                    "to": ["ana.gomez@example.com"],
+                    "subject": "Acta de la reunión",
+                    "body": "Adjunto el acta.",
+                },
+            )
+
+    result = asyncio.run(_call())
+    row = result.structured_content
+
+    assert row["entryId"].startswith("FAKE-DRAFT-")
+    assert row["folder"] == "drafts"
+    assert fake_mail._folders[MailFolder.DRAFTS][0].subject == "Acta de la reunión"
+
+
+def test_file_search_tool_delivers_rows_with_naive_bridge_datetimes(mocker):
+    """BUG-006 round 3 (file_write/0073): rows whose last_modified is
+    UTC-NAIVE — the live PowerShell-bridge shape — must survive the MCP
+    output schema's RFC 3339 date-time validation, not be rejected at the
+    boundary after every lower layer worked. This is the
+    cross-the-caller's-boundary test the QA-venv check could not be."""
+    import server
+
+    mocker.patch(
+        "tools.file_search.load_settings",
+        return_value={"file_search_allowed_roots": ["C:\\co"]},
+    )
+    naive_row = FileDetail(
+        path="C:\\co\\f.txt",
+        name="f.txt",
+        size=1,
+        last_modified=datetime(2026, 8, 31, 10, 48, 49),  # naive, live shape
+        created_time=datetime(2026, 8, 30, 9, 0, 0),  # naive too
+        snippet="informa figures",
+    )
+    fake_files = FakeFileSearchAdapter(files=[naive_row])
+    app = server.create_server(file_search_adapter=fake_files)
+
+    async def _call():
+        async with Client(app) as client:
+            return await client.call_tool("file_search", {"phrase": "informa"})
+
+    result = asyncio.run(_call())
+    rows = result.structured_content["results"]
+
+    assert len(rows) == 1
+    value = rows[0]["lastModified"]
+    assert value.endswith("Z") or value.endswith("+00:00")

@@ -457,3 +457,48 @@ def test_search_returns_newest_first_and_bounds_for_folder_path():
     results = adapter.search(folder_path="Proyectos/2026", subject="reunion", limit=1)
 
     assert [r.entry_id for r in results] == ["O-AUG20", "O-AUG10"]
+
+
+# --- create_draft() (add-mail-write-draft change: mail_write_draft tool) ---
+
+
+def test_create_draft_returns_draft_detail_and_lands_in_drafts_folder():
+    from models.schemas import MailSearchRequest
+    from tools.mail import mail_search
+
+    adapter = FakeMailAdapter()
+
+    draft = adapter.create_draft(
+        to=["ana.gomez@example.com"],
+        cc=["luis@example.com"],
+        subject="Borrador de prueba",
+        body="Cuerpo del borrador.",
+    )
+
+    assert draft.entry_id.startswith("FAKE-DRAFT-")
+    assert draft.to == ["ana.gomez@example.com"]
+    assert draft.cc == ["luis@example.com"]
+    assert draft.subject == "Borrador de prueba"
+    assert draft.body == "Cuerpo del borrador."
+    assert draft.folder == "drafts"
+    # the draft is a real member of the drafts folder — mail_search sees it
+    result = mail_search(
+        MailSearchRequest(folder="drafts", subject="Borrador"), adapter
+    )
+    assert [m.entry_id for m in result.results] == [draft.entry_id]
+
+
+def test_create_draft_never_touches_inbox_or_sent():
+    adapter = FakeMailAdapter()
+
+    adapter.create_draft(to=[], cc=[], subject="s", body="b")
+
+    assert adapter._folders[MailFolder.INBOX] == []
+    assert adapter._folders[MailFolder.SENT] == []
+
+
+def test_create_draft_unavailable_raises():
+    adapter = FakeMailAdapter(unavailable=True)
+
+    with pytest.raises(OutlookUnavailableError):
+        adapter.create_draft(to=["a@b.c"], cc=[], subject="s", body="b")

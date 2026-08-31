@@ -1839,3 +1839,91 @@ def test_folder_path_search_returns_all_when_under_limit_plus_one(mocker):
     results = adapter.search(folder_path="Proyectos", limit=50)
 
     assert [r.entry_id for r in results] == ["P2", "P1"]
+
+
+# --- create_draft() (add-mail-write-draft change) ---
+
+
+class _FakeDraftItem:
+    """Stand-in for the MailItem returned by Outlook's CreateItem(0):
+    records property sets and whether Save()/Send() were ever called."""
+
+    def __init__(self):
+        self.To = ""
+        self.CC = ""
+        self.Subject = ""
+        self.Body = ""
+        self.EntryID = "DRAFT-ENTRY-1"
+        self.LastModificationTime = datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc)
+        self.saved = False
+        self.sent = False
+
+    def Save(self):
+        self.saved = True
+
+    def Send(self):  # pragma: no cover - the assertion is that this NEVER runs
+        self.sent = True
+
+
+def test_create_draft_creates_mailitem_sets_fields_and_saves(mocker):
+    from tools.mail_adapter import OutlookMailAdapter
+
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook = mocker.Mock(name="OutlookApplication")
+    item = _FakeDraftItem()
+    outlook.CreateItem.return_value = item
+    dispatch_mock.return_value = outlook
+
+    adapter = OutlookMailAdapter()
+    draft = adapter.create_draft(
+        to=["ana@example.com", "luis@example.com"],
+        cc=["cc@example.com"],
+        subject="Asunto",
+        body="Cuerpo",
+    )
+
+    outlook.CreateItem.assert_called_once_with(0)  # olMailItem
+    assert item.To == "ana@example.com; luis@example.com"
+    assert item.CC == "cc@example.com"
+    assert item.Subject == "Asunto"
+    assert item.Body == "Cuerpo"
+    assert item.saved is True
+    assert item.sent is False  # the never-send guarantee, asserted
+    assert draft.entry_id == "DRAFT-ENTRY-1"
+    assert draft.folder == "drafts"
+    assert draft.saved_at == datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc)
+
+
+def test_create_draft_empty_recipient_lists_leave_to_cc_untouched(mocker):
+    from tools.mail_adapter import OutlookMailAdapter
+
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook = mocker.Mock(name="OutlookApplication")
+    item = _FakeDraftItem()
+    outlook.CreateItem.return_value = item
+    dispatch_mock.return_value = outlook
+
+    adapter = OutlookMailAdapter()
+    adapter.create_draft(to=[], cc=[], subject="s", body="b")
+
+    assert item.To == ""
+    assert item.CC == ""
+    assert item.saved is True
+
+
+def test_create_draft_save_failure_maps_to_unavailable(mocker):
+    from tools.mail_adapter import OutlookMailAdapter
+
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook = mocker.Mock(name="OutlookApplication")
+    item = _FakeDraftItem()
+    item.Save = mocker.Mock(side_effect=Exception("MAPI store offline"))
+    outlook.CreateItem.return_value = item
+    dispatch_mock.return_value = outlook
+
+    adapter = OutlookMailAdapter()
+
+    with pytest.raises(OutlookUnavailableError) as excinfo:
+        adapter.create_draft(to=["a@b.c"], cc=[], subject="s", body="b")
+
+    assert "MAPI store offline" in str(excinfo.value)

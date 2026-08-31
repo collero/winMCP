@@ -53,6 +53,7 @@ from models.schemas import (
     GetFileInfoRequest,
     GetMessageRequest,
     GetNotesRequest,
+    DraftDetail,
     GetPageRequest,
     GetTaskRequest,
     ListPagesRequest,
@@ -70,6 +71,7 @@ from models.schemas import (
     TaskSearchResult,
     TaskStatus,
     UpdatePageRequest,
+    WriteDraftRequest,
 )
 from tools import settings
 from tools.errors import CalendarToolError
@@ -111,10 +113,10 @@ _MAIL_PRESENT = all(
     importlib.util.find_spec(m) is not None for m in ("tools.mail", "tools.mail_adapter")
 )
 if _MAIL_PRESENT:
-    from tools.mail import mail_get_message, mail_search
+    from tools.mail import mail_get_message, mail_search, mail_write_draft
     from tools.mail_adapter import MailPort
 else:
-    mail_get_message = mail_search = None
+    mail_get_message = mail_search = mail_write_draft = None
     MailPort = Any  # type: ignore[assignment,misc]
 
 _FILE_PRESENT = all(
@@ -167,6 +169,7 @@ _FAMILY_PRESENT_BY_TOOL = {
     "task_get_task": _TASK_PRESENT,
     "mail_search": _MAIL_PRESENT,
     "mail_get_message": _MAIL_PRESENT,
+    "mail_write_draft": _MAIL_PRESENT,
     "file_search": _FILE_PRESENT,
     "file_get_info": _FILE_PRESENT,
     "onenote_search": _ONENOTE_PRESENT,
@@ -497,6 +500,28 @@ def create_server(
             try:
                 return mail_get_message(request, _mail_adapter())
             except CalendarToolError as exc:
+                raise _map_error(exc) from exc
+
+    if _tool_enabled("mail_write_draft"):
+        @app.tool(name="mail_write_draft")
+        def _mail_write_draft(
+            to: list[str] | None = None,
+            cc: list[str] | None = None,
+            subject: str = "",
+            body: str = "",
+        ) -> DraftDetail:
+            """Create a DRAFT email in Outlook's Drafts folder for the user
+            to review and send themselves — this tool NEVER sends, and no
+            send capability exists anywhere in this server. `to`/`cc` are
+            lists of addresses or display names (Outlook resolves them);
+            a draft with a body and no recipients yet is legitimate. At
+            least one of to/cc/subject/body must be non-empty. `body` is
+            plain text. Returns the saved draft's `entryId` (readable back
+            via `mail_get_message`) with `folder: "drafts"`."""
+            request = WriteDraftRequest(to=to or [], cc=cc or [], subject=subject, body=body)
+            try:
+                return mail_write_draft(request, _mail_adapter())
+            except (CalendarToolError, ValueError) as exc:
                 raise _map_error(exc) from exc
 
     if _tool_enabled("file_search"):

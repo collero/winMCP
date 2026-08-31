@@ -42,7 +42,7 @@ def test_load_catalog_parses_on_wsl2_without_win32com():
     catalog = load_catalog(_CATALOG_PATH)
 
     assert isinstance(catalog, list)
-    assert len(catalog) == 16
+    assert len(catalog) == 17
 
 
 def test_load_catalog_matches_server_py_tool_names_exactly():
@@ -50,7 +50,7 @@ def test_load_catalog_matches_server_py_tool_names_exactly():
     catalog_names = [entry["name"] for entry in catalog]
     server_names = _server_tool_names()
 
-    assert len(server_names) == 16
+    assert len(server_names) == 17
     assert sorted(catalog_names) == sorted(server_names)
     assert len(catalog_names) == len(set(catalog_names))
 

@@ -7,7 +7,7 @@ input shapes. Field aliases match the wire/JSON casing used in specs.md
 snake_case; `populate_by_name=True` lets code construct instances either way.
 """
 from datetime import date as date_
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -212,6 +212,36 @@ class MessageDetail(MessageSummary):
     html_body: str | None = Field(default=None, alias="htmlBody")
 
 
+class WriteDraftRequest(_AliasedModel):
+    """Input for `mail_write_draft` (add-mail-write-draft change). Every
+    field is optional at the schema level — a draft with a body and no
+    recipients yet is a legitimate draft — but the tool layer rejects a
+    COMPLETELY empty request and any blank recipient string with a plain
+    `ValueError` before the adapter is ever called."""
+
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    subject: str = ""
+    body: str = ""
+
+
+class DraftDetail(_AliasedModel):
+    """The draft `mail_write_draft` just saved into Outlook's Drafts
+    folder. Deliberately NOT a `MessageDetail`: a fresh draft has no
+    sender/received date, and `folder` is pinned to `"drafts"` so the
+    response itself states where the item went. `saved_at` is Outlook's
+    `LastModificationTime` when available. Sending is a human act in the
+    Outlook UI — the server has no send capability anywhere."""
+
+    entry_id: str = Field(alias="entryId")
+    subject: str
+    to: list[str]
+    cc: list[str] = Field(default_factory=list)
+    body: str
+    saved_at: datetime | None = Field(default=None, alias="savedAt")
+    folder: str = "drafts"
+
+
 class MailSearchRequest(_AliasedModel):
     """Input for `mail_search`. `folder` and `folder_path` (added for the
     mail-reading-depth change) are mutually exclusive selectors — see that
@@ -325,6 +355,19 @@ class FileSummary(_AliasedModel):
     extension: str | None = None
     alt_url_path: str | None = Field(default=None, exclude=True)
 
+    # BUG-006 round 3 (file_write/0073): the PowerShell bridge's phrase
+    # leg delivers UTC-NAIVE datetimes (live-verified equal to os.stat
+    # UTC across a DST boundary), which serialize WITHOUT an offset and
+    # fail the MCP output schema's RFC 3339 date-time format — every row
+    # rejected at the boundary. Coercing naive -> UTC-aware here fixes
+    # every producing route at once; already-aware values pass through.
+    @field_validator("last_modified")
+    @classmethod
+    def _naive_datetime_is_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
 
 class FileSearchResponse(_AliasedModel):
     """Response envelope for `file_search` (file-search-resilience change).
@@ -353,6 +396,15 @@ class FileDetail(FileSummary):
 
     created_time: datetime = Field(alias="createdTime")
     snippet: str | None = None
+
+    # Same UTC-naive coercion as FileSummary.last_modified (BUG-006
+    # round 3) — created_time comes off the same index columns.
+    @field_validator("created_time")
+    @classmethod
+    def _naive_created_is_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class PageSummary(_AliasedModel):

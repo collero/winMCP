@@ -493,3 +493,85 @@ def test_settings_yaml_declares_mail_lookback_days_90():
 
     assert "mail_lookback_days" in settings
     assert settings["mail_lookback_days"] == 90
+
+
+# --- mail_write_draft (add-mail-write-draft change) ---
+# Creates a draft in Outlook's Drafts folder for HUMAN review — the tool
+# (and the whole server) has no send capability; that is the safety model,
+# structural rather than policed.
+
+
+def test_write_draft_creates_draft_via_adapter():
+    from models.schemas import WriteDraftRequest
+    from tools.mail import mail_write_draft
+
+    adapter = FakeMailAdapter()
+    request = WriteDraftRequest(
+        to=["ana.gomez@example.com"],
+        cc=["luis@example.com"],
+        subject="Acta de la reunión",
+        body="Adjunto el acta.",
+    )
+
+    draft = mail_write_draft(request, adapter)
+
+    assert draft.entry_id
+    assert draft.subject == "Acta de la reunión"
+    assert draft.to == ["ana.gomez@example.com"]
+    assert draft.cc == ["luis@example.com"]
+    assert draft.folder == "drafts"
+
+
+def test_write_draft_allows_empty_recipients_for_a_working_draft():
+    """A draft with a body but no recipients yet is a legitimate draft —
+    the human adds recipients in Outlook before sending."""
+    from models.schemas import WriteDraftRequest
+    from tools.mail import mail_write_draft
+
+    adapter = FakeMailAdapter()
+
+    draft = mail_write_draft(
+        WriteDraftRequest(subject="Notas", body="Texto."), adapter
+    )
+
+    assert draft.to == []
+
+
+def test_write_draft_completely_empty_request_rejected_before_adapter(mocker):
+    from models.schemas import WriteDraftRequest
+    from tools.mail import mail_write_draft
+
+    adapter = FakeMailAdapter()
+    spy = mocker.spy(adapter, "create_draft")
+
+    with pytest.raises(ValueError):
+        mail_write_draft(WriteDraftRequest(), adapter)
+
+    spy.assert_not_called()
+
+
+def test_write_draft_blank_recipient_rejected_before_adapter(mocker):
+    """An empty-string recipient would silently produce '; ' runs in the
+    Outlook To line — rejected as invalid input, never passed through."""
+    from models.schemas import WriteDraftRequest
+    from tools.mail import mail_write_draft
+
+    adapter = FakeMailAdapter()
+    spy = mocker.spy(adapter, "create_draft")
+
+    with pytest.raises(ValueError):
+        mail_write_draft(
+            WriteDraftRequest(to=["ana@example.com", "  "], subject="s"), adapter
+        )
+
+    spy.assert_not_called()
+
+
+def test_write_draft_unavailable_raises_tool_error():
+    from models.schemas import WriteDraftRequest
+    from tools.mail import mail_write_draft
+
+    adapter = FakeMailAdapter(unavailable=True)
+
+    with pytest.raises(OutlookUnavailableError):
+        mail_write_draft(WriteDraftRequest(subject="s", body="b"), adapter)

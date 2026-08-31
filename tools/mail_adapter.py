@@ -15,7 +15,7 @@ four — see design.md's "Folder parameterization" decision.
 from datetime import datetime
 from typing import Any, Protocol
 
-from models.schemas import MailFolder, MessageDetail, MessageSummary
+from models.schemas import DraftDetail, MailFolder, MessageDetail, MessageSummary
 from tools.errors import MailFolderNotFoundError, MessageNotFoundError, OutlookUnavailableError
 from tools.settings import load_settings, local_timezone
 
@@ -64,6 +64,20 @@ class MailPort(Protocol):
 
         Raises MessageNotFoundError if entry_id does not resolve to an item,
         OutlookUnavailableError if Outlook cannot be reached at all.
+        """
+        ...
+
+    def create_draft(
+        self, to: list[str], cc: list[str], subject: str, body: str
+    ) -> DraftDetail:
+        """Create a new draft in Outlook's default Drafts folder and
+        return its `DraftDetail` (add-mail-write-draft change). NEVER
+        sends — no implementation of this port has any send capability;
+        sending stays a human act in the Outlook UI. Empty `to`/`cc`
+        lists are legitimate (a draft in progress).
+
+        Raises OutlookUnavailableError if Outlook cannot be reached or
+        the draft cannot be saved.
         """
         ...
 
@@ -433,6 +447,44 @@ class OutlookMailAdapter:
             results = results[: limit + 1]
 
         return results
+
+    def create_draft(
+        self, to: list[str], cc: list[str], subject: str, body: str
+    ) -> DraftDetail:
+        """Create and Save() a new MailItem — Outlook places a saved,
+        unsent MailItem in the default Drafts folder. `Send()` is never
+        called anywhere in this codebase; the draft sits in Drafts until
+        a human sends it from the Outlook UI (add-mail-write-draft
+        change's structural never-send guarantee)."""
+        outlook = self._dispatch_outlook()
+        try:
+            item = outlook.CreateItem(0)  # olMailItem
+            if to:
+                item.To = "; ".join(to)
+            if cc:
+                item.CC = "; ".join(cc)
+            item.Subject = subject
+            item.Body = body
+            item.Save()
+            entry_id = item.EntryID
+            saved_at = getattr(item, "LastModificationTime", None)
+            if saved_at is not None:
+                # Same convention as every other Outlook date read
+                # (_to_aware + local_timezone): naive values get the local
+                # tz attached; already-aware pywintypes values pass
+                # through. See ISSUES.md ENH-005 for the open question
+                # about pywintypes' UTC label on local wall-clock values.
+                saved_at = _to_aware(saved_at, local_timezone())
+        except Exception as exc:
+            raise OutlookUnavailableError(f"Could not save draft: {exc}") from exc
+        return DraftDetail(
+            entry_id=entry_id,
+            subject=subject,
+            to=list(to),
+            cc=list(cc),
+            body=body,
+            saved_at=saved_at,
+        )
 
     def get_message(self, entry_id: str, include_html: bool = False) -> MessageDetail:
         outlook = self._dispatch_outlook()

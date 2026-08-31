@@ -189,3 +189,19 @@
   to re-issue once." to the error, transport diagnostics kept verbatim
   behind it. Deliberately NO auto-retry — legible, not invisible. 5 unit
   tests (all read ops + a non-timeout control); suite 772.
+
+## ENH-005 — pywintypes may mislabel Outlook COM local wall-clock datetimes as UTC (OPEN, question for cowork)
+
+- **Observed**: 2026-08-31 15:10Z during mail_write_draft's live pre-check:
+  a draft saved at 15:10:54Z real time came back with
+  `LastModificationTime = 17:10:54+00:00` — local CEST wall-clock carrying
+  a UTC label (2h error), already "aware" so `_to_aware()` passes it
+  through untouched.
+- **Scope question**: the same pywintypes shape feeds every Outlook-family
+  date (mail ReceivedTime/SentOn, calendar, tasks). If systemic, all those
+  timestamps are off by the UTC offset. Never flagged in any mailbox round
+  — verify before believing: cowork can compare a mail_get_message date
+  against the same message's time shown in the Outlook UI.
+- **Not touched tonight** (experiment-eve discipline): mail_write_draft
+  follows the existing `_to_aware` convention; investigation is a
+  post-morning-read item with cowork.

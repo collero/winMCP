@@ -104,6 +104,14 @@ families:
             - tools/mail_adapter.py
           ps1: []
           config_keys: []
+      - name: mail_write_draft
+        maturity: alpha
+        deps:
+          modules:
+            - tools/mail.py
+            - tools/mail_adapter.py
+          ps1: []
+          config_keys: []
 
   - name: file
     tools:

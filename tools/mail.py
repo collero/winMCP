@@ -26,10 +26,12 @@ parameter.
 from datetime import datetime, timedelta, timezone
 
 from models.schemas import (
+    DraftDetail,
     GetMessageRequest,
     MailSearchRequest,
     MailSearchResult,
     MessageDetail,
+    WriteDraftRequest,
 )
 from tools.mail_adapter import MailPort
 from tools.settings import load_settings, resolve_search_limit
@@ -106,3 +108,34 @@ def mail_get_message(request: GetMessageRequest, adapter: MailPort) -> MessageDe
     entryId. `html_body` is populated only when `includeHtmlBody=true` was
     passed."""
     return adapter.get_message(request.entry_id, include_html=request.include_html_body)
+
+
+def mail_write_draft(request: WriteDraftRequest, adapter: MailPort) -> DraftDetail:
+    """Create a draft email in Outlook's Drafts folder for HUMAN review
+    (add-mail-write-draft change). NEVER sends: neither this function,
+    the adapter, nor any other code in this server calls `MailItem.Send`
+    — the safety model is structural, not policed. Sending stays a human
+    act in the Outlook UI.
+
+    Validation before any adapter call (plain `ValueError`, mirroring the
+    module's taxonomy note): a completely empty request (no recipients,
+    no subject, no body) is rejected — an all-blank draft is caller
+    error, not a draft — and any blank/whitespace-only recipient string
+    is rejected too, since it would silently produce `'; '` runs in the
+    Outlook To/CC line. A draft with a body but no recipients yet is
+    LEGITIMATE and accepted."""
+    if not request.to and not request.cc and not request.subject and not request.body:
+        raise ValueError(
+            "mail_write_draft requires at least one of to/cc/subject/body — "
+            "an entirely empty draft was refused"
+        )
+    for field_name, recipients in (("to", request.to), ("cc", request.cc)):
+        for recipient in recipients:
+            if not recipient or not recipient.strip():
+                raise ValueError(
+                    f"mail_write_draft got a blank recipient in {field_name!r} — "
+                    f"every recipient must be a non-empty address or name"
+                )
+    return adapter.create_draft(
+        to=request.to, cc=request.cc, subject=request.subject, body=request.body
+    )
