@@ -1,0 +1,28 @@
+[project]
+name = "win-mcp"
+version = "0.1.0"
+description = "MVP MCP server exposing Outlook calendar (calendar_search, calendar_get_event, calendar_get_notes), tasks/to-do (task_search, task_get_task), and mail (mail_search, mail_get_message) tools over stdio via Outlook COM."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp",
+    "pydantic>=2",
+    "pyyaml",
+    "pywin32; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["models", "tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

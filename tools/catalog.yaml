@@ -1,0 +1,221 @@
+# Source of truth enumerating every tool WinMCP ships: family, maturity,
+# and file/module/bridge dependencies (selective-tool-deployment change,
+# tool-catalog spec's "Catalog Structure" requirement).
+#
+# Never read at runtime by server.py/smoke_test.py directly — it drives
+# two derived, build/install-time artifacts instead (design.md's
+# "Technical Approach"): `tools/shipped-tools.json` (written by
+# make-deploy-package.sh, read by install.ps1) and
+# `config/installed-tools.yaml` (written by install.ps1, read by
+# tools/settings.py::installed_tools()).
+#
+# `families[].tools[].name` MUST match a `server.py` `@app.tool(name=...)`
+# exactly (test-enforced by tests/test_catalog.py against server.py's
+# source, and by Gate 7 at build time against shipped-tools.json).
+#
+# `maturity` is one of alpha/beta/stable. It seeds the `--share` build's
+# tool picker pre-selection ONLY (beta/stable pre-checked, alpha
+# unchecked) — it MUST NOT exclude a tool from the default/full build,
+# and it is never re-derived by install.ps1 (design.md Decision 8:
+# maturity assignment lives only here). Per the user's decision: OneNote
+# is beta (still being validated); calendar/tasks/mail/files are alpha.
+#
+# `deps.modules`: `.py` files under tools/ (plus models/schemas.py is a
+# shared dependency of every tool and is intentionally omitted here —
+# it is never selectively staged). `deps.ps1`: PowerShell bridge scripts.
+# `deps.config_keys`: config/settings.yaml keys the tool's own code path
+# reads (informational; not exhaustive of shared defaults like
+# search_default_limit/search_max_limit).
+
+families:
+  - name: calendar
+    tools:
+      - name: calendar_search
+        maturity: alpha
+        deps:
+          modules:
+            - tools/calendar.py
+            - tools/outlook_adapter.py
+          ps1: []
+          config_keys:
+            - calendar_folder_id
+            - lookback_days
+            - calendar_subject_search_lookback_days
+            - calendar_subject_search_lookahead_days
+      - name: calendar_get_event
+        maturity: alpha
+        deps:
+          modules:
+            - tools/calendar.py
+            - tools/outlook_adapter.py
+          ps1: []
+          config_keys:
+            - calendar_folder_id
+      - name: calendar_get_notes
+        maturity: alpha
+        deps:
+          modules:
+            - tools/calendar.py
+            - tools/outlook_adapter.py
+          ps1: []
+          config_keys:
+            - calendar_folder_id
+
+  - name: task
+    tools:
+      - name: task_search
+        maturity: alpha
+        deps:
+          modules:
+            - tools/tasks.py
+            - tools/task_adapter.py
+          ps1: []
+          config_keys:
+            - tasks_folder_id
+      - name: task_get_task
+        maturity: alpha
+        deps:
+          modules:
+            - tools/tasks.py
+            - tools/task_adapter.py
+          ps1: []
+          config_keys:
+            - tasks_folder_id
+
+  - name: mail
+    tools:
+      - name: mail_search
+        maturity: alpha
+        deps:
+          modules:
+            - tools/mail.py
+            - tools/mail_adapter.py
+          ps1: []
+          config_keys:
+            - inbox_folder_id
+            - sent_folder_id
+            - drafts_folder_id
+            - mail_lookback_days
+      - name: mail_get_message
+        maturity: alpha
+        deps:
+          modules:
+            - tools/mail.py
+            - tools/mail_adapter.py
+          ps1: []
+          config_keys: []
+
+  - name: file
+    tools:
+      - name: file_search
+        maturity: alpha
+        deps:
+          modules:
+            - tools/file_search.py
+            - tools/file_search_adapter.py
+            - tools/file_search_walk.py
+            # file_search_adapter's PowerShellSearchBridge runs on the
+            # shared transport and executes the search bridge script —
+            # both were missing here originally (harmless while every
+            # file always shipped; load-bearing under hard exclusion).
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_search.ps1
+          config_keys:
+            - file_search_allowed_roots
+            - file_search_max_results
+            - file_search_walk_time_budget_seconds
+            - file_search_walk_max_dirs
+            - file_search_ps_bridge_timeout_seconds
+            - file_search_bridge_debug_log
+      - name: file_get_info
+        maturity: alpha
+        deps:
+          modules:
+            - tools/file_search.py
+            - tools/file_search_adapter.py
+            # tools/file_search.py imports tools.file_search_walk
+            # unconditionally at module level (`walk_filename`, used by
+            # `file_search`'s filename-only path) -- missing here
+            # originally, same class of oversight as ps_bridge_transport.py
+            # below (harmless while every file always shipped; load-bearing
+            # under hard exclusion: a share build selecting only
+            # file_get_info would otherwise omit this file and break
+            # `from tools.file_search import file_get_info, file_search`
+            # at import time). Caught by make-deploy-package.sh Gate 7's
+            # import-graph completeness check (hard-tool-exclusion change).
+            - tools/file_search_walk.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_search.ps1
+          config_keys:
+            - file_search_allowed_roots
+
+  - name: server
+    tools:
+      - name: server_info
+        maturity: stable
+        deps:
+          modules:
+            - tools/deployment_info.py
+
+  - name: onenote
+    tools:
+      - name: onenote_search
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_search_max_results
+            - onenote_ps_bridge_timeout_seconds
+      - name: onenote_get_page
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_ps_bridge_timeout_seconds
+      - name: onenote_list_sections
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_ps_bridge_timeout_seconds
+      - name: onenote_create_page
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_writable_notebooks
+            - onenote_ps_bridge_timeout_seconds
+      - name: onenote_update_page
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_writable_notebooks
+            - onenote_ps_bridge_timeout_seconds

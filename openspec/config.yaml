@@ -1,0 +1,76 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.12.3, FastMCP (MCP server framework), pywin32/win32com for Outlook COM
+  Architecture: single MCP server (server.py) exposing tools/{calendar,todo,onenote,outlook}.py,
+    models/schemas.py, config/settings.yaml (per specs.md); MVP scope = Outlook calendar only
+  Target runtime: Windows only (win32com requires Outlook installed); dev/CI shell is WSL2 Linux
+  Testing: pytest planned (not yet installed); COM must be mocked/injected to unit-test on Linux
+  Style: no linter/formatter/type-checker configured yet (greenfield, no pyproject.toml)
+  Source: full narrative spec at /home/master/WinMCP/specs.md (Spanish)
+
+strict_tdd: true
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages (tools/, models/, config/, server.py)
+    - Note Windows-only runtime constraint (COM) vs Linux dev/CI constraint explicitly
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Every scenario touching Outlook COM MUST specify the mocked win32com behavior, since
+      no real Outlook/Windows is available in this dev environment
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Design the Outlook COM access behind a seam (e.g. an adapter/port) so it can be
+      swapped for a fake/mock in tests without importing win32com on Linux
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+    - First batch of tasks MUST bootstrap pyproject.toml + pytest + pytest-mock (or unittest.mock)
+      before any COM-dependent tool logic is implemented, per Strict TDD Mode
+  apply:
+    - Follow existing code patterns and conventions
+    - Load relevant coding skills for the project stack
+    tdd: true
+    test_command: "python3.12 -m pytest -q"
+  verify:
+    test_command: "python3.12 -m pytest -q"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas (large removals)
+
+testing:
+  strict_tdd: true
+  strict_tdd_source: "informa-wizard TUI marker in ~/.claude/CLAUDE.md (<!-- informa-wizard:strict-tdd-mode --> enabled)"
+  detected: "2026-07-29"
+  test_runner:
+    framework: pytest
+    command: "python3.12 -m pytest -q"
+    status: "NOT YET INSTALLED — greenfield project, no pyproject.toml exists. pytest is the
+      natural/planned runner per project context. Bootstrapping it (pyproject.toml + pytest +
+      pytest-mock as dev dependencies) MUST be the first apply task before any TDD cycle starts."
+  test_layers:
+    unit: "available once pytest is installed — no blockers"
+    integration: "available via a mocked win32com.client module (monkeypatch/fake COM objects);
+      no real Outlook/Windows needed on the Linux dev host"
+    e2e: "not available in this environment — would require a real Windows host with Outlook
+      installed; out of scope for CI, left as manual verification on the target machine"
+  coverage:
+    available: false
+    command: "python3.12 -m pytest --cov (pytest-cov not yet installed)"
+  quality_tools:
+    linter: "not configured — recommend ruff"
+    type_checker: "not configured — recommend mypy or pyright"
+    formatter: "not configured — recommend ruff format or black"
+  platform_note: >
+    Runtime target is Windows (Outlook COM via pywin32: win32com.client.Dispatch("Outlook.Application")).
+    This shell is WSL2 Linux; `import win32com` fails here (module not installed, and pywin32 is
+    Windows-only). All COM-dependent code MUST be written behind a seam (adapter/port) so tests can
+    inject a fake/mock Outlook namespace and run red-green-refactor entirely on Linux. sdd-apply and
+    sdd-verify MUST NOT attempt to `pip install pywin32` on this Linux host — it will not work.

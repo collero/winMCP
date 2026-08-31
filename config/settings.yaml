@@ -1,0 +1,119 @@
+# MVP settings for the WinMCP server (Outlook Calendar + Tasks/To Do + Mail).
+#
+# lookback_days: default number of days to look back when a calendar_search
+#   request omits an explicit `from` date.
+# mail_lookback_days: default number of days to look back when a
+#   mail_search request omits both dateFrom/dateTo (or only one of them) -
+#   distinct from lookback_days, since mail is typically searched much
+#   further back than calendar notes.
+# calendar_folder_id: Outlook "default folder" constant passed to
+#   GetDefaultFolder() — 9 is olFolderCalendar.
+# tasks_folder_id: Outlook "default folder" constant passed to
+#   GetDefaultFolder() for task_search/task_get_task — 13 is olFolderTasks
+#   (synced with Microsoft To Do).
+# inbox_folder_id: Outlook "default folder" constant passed to
+#   GetDefaultFolder() for mail_search/mail_get_message on folder=inbox —
+#   6 is olFolderInbox.
+# sent_folder_id: Outlook "default folder" constant passed to
+#   GetDefaultFolder() for mail_search/mail_get_message on folder=sent —
+#   5 is olFolderSentMail.
+# drafts_folder_id: Outlook "default folder" constant passed to
+#   GetDefaultFolder() for mail_search/mail_get_message on folder=drafts —
+#   16 is olFolderDrafts.
+# timezone_override: optional IANA timezone name (e.g. "Europe/Madrid") used
+#   instead of the local Windows timezone when converting Outlook's naive
+#   local-time datetimes to timezone-aware datetimes. Leave null to use the
+#   host's local timezone.
+# file_search_allowed_roots: absolute paths file_search/file_get_info are
+#   restricted to. When empty, tools/settings.py's default_search_roots()
+#   resolves %USERPROFILE% plus any of %OneDrive%/%OneDriveCommercial%/
+#   %OneDriveConsumer% set in the environment instead — never hardcoded,
+#   resolved live per call. A non-empty list REPLACES those defaults
+#   entirely (paths are literal — no env-var expansion), which is why the
+#   user profile is listed explicitly below alongside the extra roots.
+#   NOTE: allowing a root does not index it — folders outside the Windows
+#   Search index (default: profile/OneDrive/Start Menu) return 0 hits until
+#   added via Windows Indexing Options.
+# file_search_max_results: cap on rows file_search returns, passed to the
+#   adapter as a SQL `TOP n` bound (never fetched unbounded then truncated).
+# file_search_walk_time_budget_seconds: wall-clock budget (seconds) the
+#   filename filesystem walk (tools/file_search_walk.py) may spend before
+#   stopping early and flagging results_truncated=true. Default 5 when absent.
+# file_search_walk_max_dirs: directory-count budget the filename filesystem
+#   walk may visit before stopping early and flagging results_truncated=true.
+#   Default 5000 when absent.
+# file_search_ps_bridge_timeout_seconds: overall wall-clock deadline (seconds)
+#   the PowerShell Windows Search fallback bridge's streaming read loop may run
+#   before killing the child and returning whatever rows already streamed as a
+#   truncated result (bridge-streaming-hotfix). Default 30 when absent (bumped
+#   from 10 -- a killed-at-the-deadline child now degrades to partial results
+#   instead of a hard failure, so a longer default budget costs less).
+# search_default_limit: default row cap for mail_search/calendar_search/
+#   task_search when the request omits `limit` (BUG-002's search-result-caps
+#   change). Read via tools/settings.py::resolve_search_limit(). Default 50
+#   when absent.
+# search_max_limit: hard maximum row cap for mail_search/calendar_search/
+#   task_search — a requested `limit` above this is clamped down to it, never
+#   rejected. Read via tools/settings.py::resolve_search_limit(). Default 200
+#   when absent (matching file_search_max_results's existing cap convention).
+# file_search_bridge_debug_log: BUG-006 diagnostic instrumentation
+#   (0061-cowork-bug006-volume-theory-dead-any-row-kills.md). When true,
+#   every PowerShellSearchBridge invocation appends one line to
+#   C:\usr\WinMCP\bridge_invocations.log (derived from the deployed
+#   script's own path, so a QA install logs to its own QA tree) recording
+#   utc/duration/exit condition/rows streamed/sentinel seen/stderr and sql
+#   excerpts -- never raises even if the write itself fails. Default true
+#   for this diagnostic build; set false once BUG-006 closes.
+# onenote_writable_notebooks: list of OneNote notebook names
+#   onenote_create_page/onenote_update_page are allowed to write to,
+#   checked in Python (tools/onenote.py) before any adapter/COM call
+#   (add-onenote-adapter change). Default ["z - Test Notebook"] when
+#   absent/empty, so an LLM-driven write can never land on one of the live
+#   Informa notebooks unless explicitly widened.
+# onenote_search_max_results: default row cap for onenote_search when the
+#   request omits `limit`. Read via
+#   tools/settings.py::onenote_search_max_results(). Default 50 when
+#   absent; a requested limit above the fixed hard ceiling of 200 is
+#   always clamped down to 200 (not independently configurable).
+# onenote_ps_bridge_timeout_seconds: overall wall-clock deadline (seconds)
+#   the OneNote PowerShell COM bridge's streaming read loop may run before
+#   killing the child. Read via
+#   tools/settings.py::onenote_ps_bridge_timeout_seconds(). Default 20
+#   when absent.
+# calendar_subject_search_lookback_days / calendar_subject_search_lookahead_days:
+#   BUG-008 hotfix (2026-08-26): the default window calendar_search
+#   auto-applies when a request supplies ONLY `subject` (no explicit
+#   `from`/`to`). Distinct from `lookback_days` (which still fills a
+#   *partially* explicit range, e.g. `to` given but `from` omitted) — a
+#   subject-only query gets a symmetric, forward-leaning window instead of
+#   a backward-only one, since a calendar's value is mostly ahead of today
+#   and the tool must be able to answer "when is my next X?". The window
+#   actually used is echoed back in the response as `windowApplied` so a
+#   caller can distinguish "no such appointment" from "outside the window
+#   this tool silently searched". An explicit `from`/`to` always overrides
+#   this window entirely (widening or narrowing is caller-controlled).
+#   Defaults: 90 days back, 365 days forward when absent.
+
+lookback_days: 7
+calendar_subject_search_lookback_days: 90
+calendar_subject_search_lookahead_days: 365
+mail_lookback_days: 90
+calendar_folder_id: 9
+tasks_folder_id: 13
+inbox_folder_id: 6
+sent_folder_id: 5
+drafts_folder_id: 16
+timezone_override: null
+file_search_allowed_roots:
+  - 'C:\Users\colleros'
+  - 'C:\co'
+  - 'C:\usr'
+file_search_max_results: 200
+file_search_walk_time_budget_seconds: 5
+file_search_walk_max_dirs: 5000
+file_search_ps_bridge_timeout_seconds: 30
+file_search_bridge_debug_log: true
+onenote_writable_notebooks:
+  - 'z - Test Notebook'
+onenote_search_max_results: 50
+onenote_ps_bridge_timeout_seconds: 20
