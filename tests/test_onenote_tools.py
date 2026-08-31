@@ -19,6 +19,7 @@ import pytest
 from models.schemas import (
     CreatePageRequest,
     GetPageRequest,
+    ListPagesRequest,
     OneNoteSearchRequest,
     PageDetail,
     UpdatePageRequest,
@@ -32,6 +33,7 @@ from tools.errors import (
 )
 from tools.fake_onenote_adapter import FakeOneNoteAdapter
 from tools.onenote import (
+    onenote_list_pages,
     onenote_list_sections,
     onenote_create_page,
     onenote_get_page,
@@ -491,3 +493,131 @@ def test_create_page_section_not_found_message_is_diagnostic():
     assert "1 notebook(s)" in text
     assert "{GUID}{1}{B0}" in text
     assert "onenote_list_sections" in text
+
+
+# ---------------------------------------------------------------------------
+# onenote_list_pages (add-onenote-list-pages: index-independent enumeration —
+# onenote/0039+0041, seconded twice by cowork; FindPages silently omits
+# unindexed pages, so search cannot be the only page-id route)
+# ---------------------------------------------------------------------------
+
+
+def _seeded_section_pages() -> FakeOneNoteAdapter:
+    hierarchy = _hierarchy(
+        ("{NB-1}{1}{B0}", "z - Test Notebook", [("{SEC-1}{1}{B0}", "New Section 1")]),
+        ("{NB-2}{1}{B0}", "Informa - Governance", [("{SEC-2}{1}{B0}", "Actas")]),
+    )
+    pages = [
+        PageDetail(
+            page_id="PAGE-COS",
+            title="COS - test table with formatting",
+            body_text="Title 1",
+            notebook_name="",  # bridge rows carry no notebook on this route
+            section_name="New Section 1",
+            section_id="{SEC-1}{1}{B0}",
+            last_modified=datetime(2026, 8, 31, 11, 22, 47, tzinfo=timezone.utc),
+        ),
+        PageDetail(
+            page_id="PAGE-NW",
+            title="overnight control NW",
+            body_text="",
+            notebook_name="",
+            section_name="New Section 1",
+            section_id="{SEC-1}{1}{B0}",
+        ),
+        PageDetail(
+            page_id="PAGE-OTHER",
+            title="Acta enero",
+            body_text="",
+            notebook_name="",
+            section_name="Actas",
+            section_id="{SEC-2}{1}{B0}",
+        ),
+    ]
+    return FakeOneNoteAdapter(pages=pages, hierarchy=hierarchy)
+
+
+def test_list_pages_returns_section_pages_with_resolved_notebook():
+    adapter = _seeded_section_pages()
+    request = ListPagesRequest(section_id="{SEC-1}{1}{B0}")
+
+    rows = onenote_list_pages(request, adapter)
+
+    assert [r.page_id for r in rows] == ["PAGE-COS", "PAGE-NW"]
+    # notebook_name is resolved by the tool layer via get_hierarchy — the
+    # section-scoped bridge rows cannot carry it themselves.
+    assert {r.notebook_name for r in rows} == {"z - Test Notebook"}
+    assert rows[0].last_modified == datetime(2026, 8, 31, 11, 22, 47, tzinfo=timezone.utc)
+
+
+def test_list_pages_empty_section_returns_empty_list():
+    hierarchy = _hierarchy(
+        ("{NB-1}{1}{B0}", "z - Test Notebook", [("{SEC-1}{1}{B0}", "New Section 1")]),
+    )
+    adapter = FakeOneNoteAdapter(pages=[], hierarchy=hierarchy)
+    request = ListPagesRequest(section_id="{SEC-1}{1}{B0}")
+
+    assert onenote_list_pages(request, adapter) == []
+
+
+def test_list_pages_unknown_section_raises_diagnostic_section_not_found():
+    """Same diagnostic contract as onenote_create_page (onenote/0003
+    defect 2): the message must say what was searched and what a real id
+    looks like — resolved BEFORE the adapter's list call."""
+    adapter = _seeded_section_pages()
+    request = ListPagesRequest(section_id="New Section 1")  # a NAME, not an id
+
+    with pytest.raises(OneNoteSectionNotFoundError) as excinfo:
+        onenote_list_pages(request, adapter)
+
+    text = str(excinfo.value)
+    assert "2 section(s)" in text
+    assert "2 notebook(s)" in text
+    assert "{GUID}{1}{B0}" in text
+    assert "onenote_list_sections" in text
+
+
+def test_list_pages_unavailable_raises_tool_error():
+    adapter = FakeOneNoteAdapter(unavailable=True)
+    request = ListPagesRequest(section_id="{SEC-1}{1}{B0}")
+
+    with pytest.raises(OneNoteUnavailableError):
+        onenote_list_pages(request, adapter)
+
+
+def test_list_pages_rows_carry_resolved_notebook_id():
+    """onenote/0043 defect: `notebookId` came back as "" on every live
+    list_pages row while the same page's get_page/search rows carried the
+    real id — the tool layer resolved the notebook NAME onto rows but not
+    its ID. Both come from the same hierarchy walk; both must land."""
+    adapter = _seeded_section_pages()
+    request = ListPagesRequest(section_id="{SEC-1}{1}{B0}")
+
+    rows = onenote_list_pages(request, adapter)
+
+    assert {r.notebook_id for r in rows} == {"{NB-1}{1}{B0}"}
+
+
+def test_list_pages_row_equals_search_row_for_an_indexed_page():
+    """cowork's 0043 acceptance recipe for this defect class: fetch the
+    same page by both routes and assert FULL-ROW equality — a set-level
+    check (count, membership) cannot see a wrong field."""
+    hierarchy = _hierarchy(
+        ("{NB-1}{1}{B0}", "z - Test Notebook", [("{SEC-1}{1}{B0}", "New Section 1")]),
+    )
+    page = PageDetail(
+        page_id="PAGE-FMT",
+        title="Formatting survival test",
+        body_text="Top-level bullet with bold text",
+        notebook_name="z - Test Notebook",
+        section_name="New Section 1",
+        notebook_id="{NB-1}{1}{B0}",
+        section_id="{SEC-1}{1}{B0}",
+        last_modified=datetime(2026, 8, 28, 10, 23, 41, tzinfo=timezone.utc),
+    )
+    adapter = FakeOneNoteAdapter(pages=[page], hierarchy=hierarchy)
+
+    [list_row] = onenote_list_pages(ListPagesRequest(section_id="{SEC-1}{1}{B0}"), adapter)
+    [search_row] = onenote_search(OneNoteSearchRequest(query="Formatting"), adapter)
+
+    assert list_row == search_row

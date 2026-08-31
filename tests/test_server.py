@@ -40,6 +40,7 @@ _ALL_TOOL_NAMES = {
     "onenote_search",
     "onenote_get_page",
     "onenote_list_sections",
+    "onenote_list_pages",
     "onenote_create_page",
     "onenote_update_page",
     "server_info",
@@ -1294,6 +1295,7 @@ def test_import_succeeds_with_one_family_absent_and_registers_zero_of_its_tools(
         "onenote_search",
         "onenote_get_page",
         "onenote_list_sections",
+        "onenote_list_pages",
         "onenote_create_page",
         "onenote_update_page",
     }
@@ -1640,3 +1642,42 @@ def test_server_info_tool_identifies_the_deployment():
     assert result.data.enabledTools == sorted(result.data.enabledTools)
     assert result.data.package is None
     assert "build-info.json" in result.data.note
+
+
+def test_onenote_list_pages_tool_returns_section_pages_via_fake_adapter():
+    """End-to-end onenote_list_pages call via FastMCP's in-process Client
+    (add-onenote-list-pages): enumeration must come from the hierarchy
+    route, independent of the search index, with the owning notebook name
+    resolved onto every row."""
+    import server
+
+    hierarchy = [
+        NotebookNode(
+            notebook_id="{NB-1}{1}{B0}",
+            name="z - Test Notebook",
+            sections=[SectionNode(section_id="{SEC-1}{1}{B0}", name="New Section 1")],
+        )
+    ]
+    page = PageDetail(
+        page_id="PAGE-COS",
+        title="COS - test table with formatting",
+        body_text="Title 1",
+        notebook_name="",
+        section_name="New Section 1",
+        section_id="{SEC-1}{1}{B0}",
+    )
+    fake_onenote = FakeOneNoteAdapter(pages=[page], hierarchy=hierarchy)
+    app = server.create_server(onenote_adapter=fake_onenote)
+
+    async def _call():
+        async with Client(app) as client:
+            return await client.call_tool(
+                "onenote_list_pages", {"sectionId": "{SEC-1}{1}{B0}"}
+            )
+
+    result = asyncio.run(_call())
+    rows = result.structured_content["result"]
+
+    assert [row["pageId"] for row in rows] == ["PAGE-COS"]
+    assert rows[0]["notebookName"] == "z - Test Notebook"
+    assert rows[0]["sectionName"] == "New Section 1"

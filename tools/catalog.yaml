@@ -195,6 +195,17 @@ families:
             - tools/ps_bridge_onenote.ps1
           config_keys:
             - onenote_ps_bridge_timeout_seconds
+      - name: onenote_list_pages
+        maturity: beta
+        deps:
+          modules:
+            - tools/onenote.py
+            - tools/onenote_adapter.py
+            - tools/ps_bridge_transport.py
+          ps1:
+            - tools/ps_bridge_onenote.ps1
+          config_keys:
+            - onenote_ps_bridge_timeout_seconds
       - name: onenote_create_page
         maturity: beta
         deps:

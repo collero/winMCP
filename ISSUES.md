@@ -164,3 +164,28 @@
   `note` explains a missing stamp on pre-stamp packages. Stamp written by
   make-deploy-package.sh as `build-info.json`. Mailbox convention: battery
   reports open with the server_info line.
+
+## ENH-004 — bridge hint for COM cold-start timeout `0x80042023` (BUILT 2026-08-31 13:03Z, QA 435b89e197b5; onenote/0045+0047)
+
+- **Observed**: 2026-08-31 12:53Z by cowork. FIRST COM call after the
+  12:52Z promote (`FindPages`) failed with HRESULT `0x80042023`, then the
+  IDENTICAL query succeeded on re-issue; seven intervening calls clean.
+  Characterised as first-call-after-quiet-period, not query- or
+  term-dependent (full sequence in `_chatCowork/onenote/_WORKLOG-cowork.md`).
+- **HRESULT named**: `0x80042023` = `hrTimeOut`, "The action timed out"
+  (OneNote COM error table, MicrosoftDocs office-developer-client-docs
+  `error-codes-onenote.md`). A timeout, not a missing object — retry-safe
+  by definition, unlike "OneNote is closed".
+- **Proposed** (cowork, explicitly not asking for a build yet): map
+  `0x80042023` in the bridge/adapter error path to a distinct hint, e.g.
+  "[onenote_unavailable] ... COM call timed out (cold start?); safe to
+  re-issue once" — so callers can tell retry-me from ask-the-human.
+- **Interim mitigation**: morning-read procedure (onenote/0045 §3): the
+  first OneNote call after a quiet period may fail with 0x80042023; treat
+  as artefact, re-issue once, record BOTH attempts.
+- **Built** (cowork's 0047 spec, adapter layer `_to_unavailable`): the
+  marker match PREPENDS "COM call timed out (0x80042023 hrTimeOut) -
+  transient, typically the first OneNote call after a quiet period; safe
+  to re-issue once." to the error, transport diagnostics kept verbatim
+  behind it. Deliberately NO auto-retry — legible, not invisible. 5 unit
+  tests (all read ops + a non-timeout control); suite 772.

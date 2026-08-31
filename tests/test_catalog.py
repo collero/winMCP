@@ -23,6 +23,7 @@ _ONENOTE_TOOLS = (
     "onenote_search",
     "onenote_get_page",
     "onenote_list_sections",
+    "onenote_list_pages",
     "onenote_create_page",
     "onenote_update_page",
 )
@@ -41,7 +42,7 @@ def test_load_catalog_parses_on_wsl2_without_win32com():
     catalog = load_catalog(_CATALOG_PATH)
 
     assert isinstance(catalog, list)
-    assert len(catalog) == 15
+    assert len(catalog) == 16
 
 
 def test_load_catalog_matches_server_py_tool_names_exactly():
@@ -49,7 +50,7 @@ def test_load_catalog_matches_server_py_tool_names_exactly():
     catalog_names = [entry["name"] for entry in catalog]
     server_names = _server_tool_names()
 
-    assert len(server_names) == 15
+    assert len(server_names) == 16
     assert sorted(catalog_names) == sorted(server_names)
     assert len(catalog_names) == len(set(catalog_names))
 

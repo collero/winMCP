@@ -32,6 +32,7 @@ this reason).
 from models.schemas import (
     CreatePageRequest,
     GetPageRequest,
+    ListPagesRequest,
     OneNoteSearchRequest,
     PageDetail,
     PageSummary,
@@ -39,7 +40,7 @@ from models.schemas import (
     UpdatePageRequest,
 )
 from tools.errors import OneNoteSectionNotFoundError, OneNoteWriteNotAllowedError
-from tools.onenote_adapter import OneNotePort
+from tools.onenote_adapter import NotebookNode, OneNotePort
 from tools.settings import (
     onenote_search_max_results,
     onenote_writable_notebooks,
@@ -96,22 +97,26 @@ def _check_writable(notebook_name: str) -> None:
         )
 
 
-def _resolve_notebook_for_section(adapter: OneNotePort, section_id: str) -> str:
-    """Resolve `section_id`'s owning notebook name by walking the
-    adapter's `get_hierarchy()` tree (design.md's "Allowlist enforcement
-    point" decision: Python resolves `section_id` via a `get_hierarchy`
-    call BEFORE checking the allowlist/calling `create_page`). Raises
-    `OneNoteSectionNotFoundError` if `section_id` does not resolve against
-    the hierarchy — mirroring `FakeOneNoteAdapter._resolve_section()`'s
-    own duplicate check, but this is the check that actually runs first in
-    the write path (Batch 2's apply-progress deviation note #6)."""
+def _resolve_notebook_for_section(adapter: OneNotePort, section_id: str) -> NotebookNode:
+    """Resolve `section_id`'s owning NOTEBOOK by walking the adapter's
+    `get_hierarchy()` tree (design.md's "Allowlist enforcement point"
+    decision: Python resolves `section_id` via a `get_hierarchy` call
+    BEFORE checking the allowlist/calling `create_page`). Returns the
+    whole `NotebookNode` — `onenote_create_page` needs its name for the
+    allowlist, `onenote_list_pages` needs name AND id for its rows
+    (onenote/0043 defect: returning only the name left `notebookId` as ""
+    on every list_pages row). Raises `OneNoteSectionNotFoundError` if
+    `section_id` does not resolve against the hierarchy — mirroring
+    `FakeOneNoteAdapter._resolve_section()`'s own duplicate check, but
+    this is the check that actually runs first in the write path (Batch
+    2's apply-progress deviation note #6)."""
     notebooks = adapter.get_hierarchy()
     section_count = 0
     for notebook in notebooks:
         for section in notebook.sections:
             section_count += 1
             if section.section_id == section_id:
-                return notebook.name
+                return notebook
     # Diagnostic by design (onenote/0003 defect 2): say what was searched
     # and what a real id looks like — the old bare "no section" message
     # cost a full debugging round because the caller could not tell a
@@ -122,6 +127,27 @@ def _resolve_notebook_for_section(adapter: OneNotePort, section_id: str) -> str:
         f"'{{GUID}}{{1}}{{B0}}' — a bare GUID or a section NAME will never "
         f"match. Call onenote_list_sections to get the real ids."
     )
+
+
+def onenote_list_pages(request: ListPagesRequest, adapter: OneNotePort) -> list[PageSummary]:
+    """Enumerate every page of one section straight from the hierarchy
+    (add-onenote-list-pages change, onenote/0039+0041): `onenote_search`
+    is index-backed and silently omits pages the index has not picked up,
+    so search cannot be the only route to a `pageId`. Read-only.
+
+    `section_id` is resolved via `get_hierarchy()` FIRST — an unknown id
+    fails with the same diagnostic `OneNoteSectionNotFoundError` as
+    `onenote_create_page` (onenote/0003 defect 2), never a raw bridge
+    error — and that same resolution supplies the owning notebook's name
+    AND id (onenote/0043 defect: name alone left `notebookId` as ""),
+    which the section-scoped bridge rows cannot carry themselves."""
+    notebook = _resolve_notebook_for_section(adapter, request.section_id)
+    return [
+        page.model_copy(
+            update={"notebook_name": notebook.name, "notebook_id": notebook.notebook_id}
+        )
+        for page in adapter.list_pages(request.section_id)
+    ]
 
 
 def onenote_list_sections(adapter: OneNotePort) -> list[SectionInfo]:
@@ -148,8 +174,8 @@ def onenote_create_page(request: CreatePageRequest, adapter: OneNotePort) -> Pag
     checked against the writable-notebook allowlist BEFORE
     `adapter.create_page()` is ever called (the onenote-write-page spec's
     "Writable Notebook Allowlist" requirement)."""
-    notebook_name = _resolve_notebook_for_section(adapter, request.section_id)
-    _check_writable(notebook_name)
+    notebook = _resolve_notebook_for_section(adapter, request.section_id)
+    _check_writable(notebook.name)
     return adapter.create_page(request.section_id, request.title, request.body_text)
 
 

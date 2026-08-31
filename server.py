@@ -7,8 +7,9 @@ Registers `calendar_search`, `calendar_get_event`, `calendar_get_notes`
 task-get-detail specs), `mail_search`, `mail_get_message`
 (outlook-mail-adapter/mail-search/mail-get-detail specs), `file_search`,
 `file_get_info` (file-search/file-get-info/windows-search-adapter specs),
-and `onenote_search`, `onenote_get_page`, `onenote_create_page`,
-`onenote_update_page` (onenote-search/onenote-get-page/onenote-write-page/
+and `onenote_search`, `onenote_get_page`, `onenote_list_sections`,
+`onenote_list_pages`, `onenote_create_page`, `onenote_update_page`
+(onenote-search/onenote-get-page/onenote-write-page/
 onenote-com-adapter specs, add-onenote-adapter change), and serves them
 over stdio only — no network listener, no authentication ("Transport and
 Access Scope" requirement).
@@ -54,6 +55,7 @@ from models.schemas import (
     GetNotesRequest,
     GetPageRequest,
     GetTaskRequest,
+    ListPagesRequest,
     MailFolder,
     MailSearchRequest,
     MailSearchResult,
@@ -133,6 +135,7 @@ if _ONENOTE_PRESENT:
     from tools.onenote import (
         onenote_create_page,
         onenote_get_page,
+        onenote_list_pages,
         onenote_list_sections,
         onenote_search,
         onenote_update_page,
@@ -140,7 +143,7 @@ if _ONENOTE_PRESENT:
     from tools.onenote_adapter import OneNotePort
 else:
     onenote_create_page = onenote_get_page = onenote_search = onenote_update_page = None
-    onenote_list_sections = None
+    onenote_list_pages = onenote_list_sections = None
     OneNotePort = Any  # type: ignore[assignment,misc]
 
 _SERVER_INFO_PRESENT = importlib.util.find_spec("tools.deployment_info") is not None
@@ -169,6 +172,7 @@ _FAMILY_PRESENT_BY_TOOL = {
     "onenote_search": _ONENOTE_PRESENT,
     "onenote_get_page": _ONENOTE_PRESENT,
     "onenote_list_sections": _ONENOTE_PRESENT,
+    "onenote_list_pages": _ONENOTE_PRESENT,
     "onenote_create_page": _ONENOTE_PRESENT,
     "onenote_update_page": _ONENOTE_PRESENT,
     "server_info": _SERVER_INFO_PRESENT,
@@ -537,7 +541,15 @@ def create_server(
             `[invalid_request]` error before any adapter call. `limit` bounds
             the number of rows returned (optional, default 50, hard max 200 —
             over-max is clamped, not rejected; `<= 0` is rejected). An empty
-            result is `[]`, not an error."""
+            result is `[]`, not an error.
+
+            INDEX-BACKED, titles and body both: results come from OneNote's
+            search index, and a page the index has not picked up yet — e.g.
+            one created recently in the UI — is silently absent even though
+            it exists and renders. A missing expected page is not proof the
+            page is gone; it may simply be unindexed (live-verified
+            2026-08-31: a 3-day-old page invisible to every query, present
+            in the hierarchy)."""
             request = OneNoteSearchRequest(query=query, limit=limit)
             try:
                 return onenote_search(request, _onenote_adapter())
@@ -551,7 +563,10 @@ def create_server(
         ) -> PageDetail:
             """Fetch full, read-only text detail for a single OneNote page by
             its `pageId` (as returned by `onenote_search`). Never mutates any
-            notebook/section/page state.
+            notebook/section/page state. Only COM `pageId`s resolve here: the
+            GUIDs inside a OneNote web/SharePoint "Copy Link to Page" URL are
+            a DIFFERENT id space and return `[onenote_page_not_found]`
+            (live-verified 2026-08-31).
 
             `bodyText` is a FLATTENED plain-text reading view of the page —
             bullets, indentation, tables and images render as plain lines. It
@@ -578,6 +593,30 @@ def create_server(
             will never resolve. Read-only; never mutates any state."""
             try:
                 return onenote_list_sections(_onenote_adapter())
+            except CalendarToolError as exc:
+                raise _map_error(exc) from exc
+
+    if _tool_enabled("onenote_list_pages"):
+        @app.tool(name="onenote_list_pages")
+        def _onenote_list_pages(
+            section_id: Annotated[str, Field(alias="sectionId")],
+        ) -> list[PageSummary]:
+            """List every page of one OneNote section, straight from the
+            hierarchy — NOT the search index, so it includes pages
+            `onenote_search` cannot return yet (the index silently omits
+            recently created pages; live-verified 2026-08-31). This is the
+            reliable route to a `pageId` when search comes up empty.
+            `sectionId` is the canonical `{GUID}{1}{B0}` form returned by
+            `onenote_list_sections`; a bare GUID or a section name will
+            never resolve. Pages come back in notebook order. An empty
+            section is `[]`, not an error. Read-only; never mutates any
+            state. `lastModifiedDateTime` here is hierarchy-sourced and can
+            lag the page's true value — call `onenote_get_page` for the
+            write-grade timestamp `onenote_update_page`'s conflict guard
+            expects."""
+            request = ListPagesRequest(section_id=section_id)
+            try:
+                return onenote_list_pages(request, _onenote_adapter())
             except CalendarToolError as exc:
                 raise _map_error(exc) from exc
 

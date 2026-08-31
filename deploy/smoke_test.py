@@ -71,6 +71,7 @@ _DEFAULT_ALL_TOOLS = {
     "onenote_search",
     "onenote_get_page",
     "onenote_list_sections",
+    "onenote_list_pages",
     "onenote_create_page",
     "onenote_update_page",
     "server_info",

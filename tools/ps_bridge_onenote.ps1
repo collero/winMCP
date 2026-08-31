@@ -16,8 +16,9 @@
 #
 # Security model: this script is a DUMB EXECUTOR, same discipline as
 # ps_bridge_search.ps1. It reads exactly one JSON object from stdin --
-# {"op": "FindPages"|"GetHierarchy"|"GetPageContent"|"CreateNewPage"|
-#  "UpdatePageContent", ...op-specific fields} -- and dispatches on "op"
+# {"op": "FindPages"|"GetHierarchy"|"ListPages"|"GetPageContent"|
+#  "CreateNewPage"|"UpdatePageContent", ...op-specific fields} -- and
+#  dispatches on "op"
 # to the matching OneNote.Application COM method, passing the given
 # fields verbatim. It performs NO allowlist/policy decisions of its own --
 # tools/onenote.py (a later batch) resolves and checks
@@ -202,6 +203,49 @@ try {
                         sectionName  = $(if ($section) { $section.name } else { "" })
                         notebookId   = $(if ($notebook) { $notebook.ID } else { "" })
                         sectionId    = $(if ($section) { $section.ID } else { "" })
+                        lastModified = ConvertTo-IsoStringOrNull $lm
+                    }
+                    $count++
+                } catch {
+                    [Console]::Error.WriteLine("row skipped: $($_.Exception.Message)")
+                    continue
+                }
+            }
+        }
+
+        "ListPages" {
+            # Section-scoped GetHierarchy at page depth (hsPages = 4):
+            # the returned XML's ROOT is the one:Section element itself
+            # (live-verified 2026-08-31), so pages FindPages has not
+            # indexed are still enumerated -- the whole point of this op
+            # (onenote/0039+0041: the search index silently misses
+            # recently created pages). An unresolvable sectionId makes
+            # GetHierarchy itself throw HRESULT 0x80042014; tools/
+            # onenote.py pre-resolves ids so that path is a race, not a
+            # normal flow.
+            $sectionId = $request.sectionId
+            $scopedXml = ""
+            $onenote.GetHierarchy($sectionId, 4, [ref]$scopedXml)
+            [xml]$sx = $scopedXml
+            $ns = New-Object System.Xml.XmlNamespaceManager($sx.NameTable)
+            $ns.AddNamespace("one", $sx.DocumentElement.NamespaceURI)
+            $sectionName = $sx.DocumentElement.GetAttribute("name")
+            foreach ($page in $sx.SelectNodes("//one:Page", $ns)) {
+                try {
+                    # Same lastModifiedTime-over-dateTime choice as
+                    # FindPages rows (onenote/0003): dateTime here is the
+                    # CREATION time. Both are hierarchy-sourced and can
+                    # lag the page XML's own value -- onenote_get_page is
+                    # the write-grade read.
+                    $lm = $page.lastModifiedTime
+                    if ([string]::IsNullOrWhiteSpace([string]$lm)) { $lm = $page.dateTime }
+                    Write-Row $stdout @{
+                        pageId       = $page.ID
+                        title        = $page.name
+                        notebookName = ""   # scoped subtree has no Notebook ancestor
+                        sectionName  = $sectionName
+                        notebookId   = ""
+                        sectionId    = $sx.DocumentElement.GetAttribute("ID")
                         lastModified = ConvertTo-IsoStringOrNull $lm
                     }
                     $count++

@@ -655,3 +655,237 @@ def test_get_page_plain_text_page_is_not_flagged(mocker):
     detail = adapter.get_page("PAGE-1")
 
     assert detail.body_text_incomplete is False
+
+
+# --- rich-text flattening (onenote/0037: bodyText leaked raw <span> markup) ---
+# OneNote stores each one:T's CDATA as HTML rich text, not plain text: runs
+# with formatting arrive wrapped in <span ...> tags (with attributes that may
+# contain embedded newlines), literal angle brackets arrive HTML-escaped, and
+# soft line breaks arrive as <br>. get_page promises a FLATTENED plain-text
+# reading view, so the extraction must strip tags, then unescape entities.
+# The span sample below is VERBATIM from the live page `Formatting survival
+# test` captured 2026-08-31 (onenote/0037's repro).
+
+
+def test_get_page_strips_inline_span_markup_from_body(mocker):
+    live_cdata = (
+        "<span\nlang=es>Top-level bullet with </span>"
+        "<span style='font-weight:bold' lang=en-US>bold text</span>"
+    )
+    transport = mocker.Mock()
+    transport.invoke.return_value = ([_page_row(paragraphs=[live_cdata])], False)
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-1")
+
+    assert detail.body_text == "Top-level bullet with bold text"
+
+
+def test_get_page_strips_markup_from_title(mocker):
+    transport = mocker.Mock()
+    transport.invoke.return_value = (
+        [_page_row(title="<span lang=es>Título </span><span style='font-style:italic'>cursiva</span>")],
+        False,
+    )
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-1")
+
+    assert detail.title == "Título cursiva"
+
+
+def test_get_page_unescapes_entities_only_after_stripping_tags(mocker):
+    """`&lt;span&gt;` is user TEXT (a literal angle-bracket string typed on
+    the page), not markup — unescaping must happen after tag stripping so
+    it survives, and `&amp;` must come back as a single `&`."""
+    transport = mocker.Mock()
+    transport.invoke.return_value = (
+        [_page_row(paragraphs=["literal &lt;span&gt; stays &amp; is kept"])],
+        False,
+    )
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-1")
+
+    assert detail.body_text == "literal <span> stays & is kept"
+
+
+def test_get_page_converts_br_to_newline(mocker):
+    transport = mocker.Mock()
+    transport.invoke.return_value = ([_page_row(paragraphs=["line one<br>line two"])], False)
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-1")
+
+    assert detail.body_text == "line one\nline two"
+
+
+def test_get_page_includes_nested_outline_text(mocker):
+    """Nested bullets must DEGRADE into the flat reading view, not vanish:
+    the live page `Formatting survival test` carries `Nested indented
+    bullet` under a child OEChildren and the flattener dropped it
+    (captured 2026-08-31). Nested text follows its parent paragraph."""
+    ns = _DEFAULT_NS
+    row = {
+        "pageId": "PAGE-N",
+        "pageXml": (
+            f'<?xml version="1.0"?>'
+            f'<one:Page xmlns:one="{ns}" ID="PAGE-N">'
+            f"<one:Title><one:OE><one:T><![CDATA[T]]></one:T></one:OE></one:Title>"
+            f"<one:Outline><one:OEChildren>"
+            f"<one:OE><one:T><![CDATA[parent bullet]]></one:T>"
+            f"<one:OEChildren><one:OE><one:T><![CDATA[nested bullet]]></one:T></one:OE></one:OEChildren>"
+            f"</one:OE>"
+            f"<one:OE><one:T><![CDATA[next top-level]]></one:T></one:OE>"
+            f"</one:OEChildren></one:Outline>"
+            f"</one:Page>"
+        ),
+        "notebookName": "z - Test Notebook",
+        "sectionName": "Notas",
+        "lastModified": "2026-08-31T11:22:47Z",
+    }
+    transport = mocker.Mock()
+    transport.invoke.return_value = ([row], False)
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-N")
+
+    assert detail.body_text == "parent bullet\nnested bullet\nnext top-level"
+    assert detail.body_text_incomplete is False
+
+
+def test_get_page_table_cell_text_stays_out_of_body(mocker):
+    """Table content is what bodyTextIncomplete exists for — cell text is
+    NOT pulled into the flat body (a Cell's OEChildren belongs to the
+    Cell, not to the outline), the flag covers the loss."""
+    inner = (
+        "<one:OE><one:Table borders=\"true\"><one:Row><one:Cell><one:OEChildren>"
+        "<one:OE><one:T><![CDATA[celda]]></one:T></one:OE>"
+        "</one:OEChildren></one:Cell></one:Row></one:Table></one:OE>"
+    )
+    transport = mocker.Mock()
+    transport.invoke.return_value = ([_structured_page_row(inner)], False)
+    adapter = OneNoteAdapter(transport=transport)
+
+    detail = adapter.get_page("PAGE-S")
+
+    assert "celda" not in detail.body_text
+    assert detail.body_text == "texto plano"
+    assert detail.body_text_incomplete is True
+
+
+# --- list_pages() (onenote/0039+0041: enumeration route that does not depend
+# on the search index — FindPages is index-backed and silently omits unindexed
+# pages, live-verified 2026-08-31 on `COS - test table with formatting`) ---
+
+
+def test_list_pages_sends_listpages_request(mocker):
+    transport = mocker.Mock()
+    transport.invoke.return_value = ([], False)
+    adapter = OneNoteAdapter(transport=transport)
+
+    adapter.list_pages("{SEC-1}{1}{B0}")
+
+    args, _kwargs = transport.invoke.call_args
+    assert args[1] == {"op": "ListPages", "sectionId": "{SEC-1}{1}{B0}"}
+
+
+def test_list_pages_maps_rows_to_page_summaries(mocker):
+    """Rows arrive in the same flat shape as FindPages rows, except
+    `notebookName` is empty — a section-scoped `GetHierarchy` subtree has
+    no Notebook ancestor; the tool layer fills it in."""
+    transport = mocker.Mock()
+    transport.invoke.return_value = (
+        [
+            {
+                "pageId": "PAGE-A",
+                "title": "COS - test table with formatting",
+                "notebookName": "",
+                "sectionName": "New Section 1",
+                "sectionId": "{SEC-1}{1}{B0}",
+                "lastModified": "2026-08-31T11:22:47+00:00",
+            },
+            {
+                "pageId": "PAGE-B",
+                "title": "overnight control NW",
+                "notebookName": "",
+                "sectionName": "New Section 1",
+                "sectionId": "{SEC-1}{1}{B0}",
+                "lastModified": None,
+            },
+        ],
+        False,
+    )
+    adapter = OneNoteAdapter(transport=transport)
+
+    rows = adapter.list_pages("{SEC-1}{1}{B0}")
+
+    assert [r.page_id for r in rows] == ["PAGE-A", "PAGE-B"]
+    assert isinstance(rows[0], PageSummary)
+    assert rows[0].title == "COS - test table with formatting"
+    assert rows[0].section_id == "{SEC-1}{1}{B0}"
+    assert rows[0].last_modified == datetime(2026, 8, 31, 11, 22, 47, tzinfo=timezone.utc)
+    assert rows[1].last_modified is None
+
+
+def test_list_pages_transport_error_raises_onenote_unavailable(mocker):
+    transport = mocker.Mock()
+    transport.invoke.side_effect = PsBridgeTransportError("bridge exploded")
+    adapter = OneNoteAdapter(transport=transport)
+
+    with pytest.raises(OneNoteUnavailableError):
+        adapter.list_pages("{SEC-1}{1}{B0}")
+
+
+# --- 0x80042023 cold-start timeout hint (ENH-004, onenote/0045+0047) ---
+# The first COM call after a quiet period can fail with hrTimeOut
+# (0x80042023, documented OneNote COM error: "The action timed out") and
+# succeed on re-issue. The error stays an OneNoteUnavailableError — no
+# auto-retry (cowork 0047: make it legible, not invisible) — but its text
+# must tell the caller, without a lookup table, that this one is a
+# transient and safe to re-issue, unlike a genuine "OneNote is closed".
+
+_COLD_START_STDERR = (
+    "PowerShell onenote bridge produced no usable output (exit: exit code 1; "
+    'stderr: script error: Exception calling "FindPages" with "5" '
+    'argument(s): "Exception from HRESULT: 0x80042023")'
+)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda a: a.search("overnight control NW", 50),
+        lambda a: a.list_pages("{SEC-1}{1}{B0}"),
+        lambda a: a.get_hierarchy(),
+        lambda a: a.get_page("PAGE-1"),
+    ],
+    ids=["search", "list-pages", "hierarchy", "get-page"],
+)
+def test_cold_start_timeout_error_says_transient_and_retry_safe(mocker, call):
+    transport = mocker.Mock()
+    transport.invoke.side_effect = PsBridgeTransportError(_COLD_START_STDERR)
+    adapter = OneNoteAdapter(transport=transport)
+
+    with pytest.raises(OneNoteUnavailableError) as excinfo:
+        call(adapter)
+
+    text = str(excinfo.value)
+    assert "safe to re-issue" in text
+    assert "0x80042023" in text
+    # the transport diagnostics must survive verbatim behind the hint
+    assert "produced no usable output" in text
+
+
+def test_non_timeout_unavailable_error_carries_no_retry_hint(mocker):
+    transport = mocker.Mock()
+    transport.invoke.side_effect = PsBridgeTransportError(
+        "PowerShell onenote bridge produced no usable output (exit: exit code 1; "
+        "stderr: script error: 80042005 class not registered)"
+    )
+    adapter = OneNoteAdapter(transport=transport)
+
+    with pytest.raises(OneNoteUnavailableError) as excinfo:
+        adapter.search("x", 50)
+
+    assert "safe to re-issue" not in str(excinfo.value)

@@ -447,6 +447,16 @@ class GetPageRequest(_AliasedModel):
     page_id: str = Field(alias="pageId")
 
 
+class ListPagesRequest(_AliasedModel):
+    """Input for `onenote_list_pages` (add-onenote-list-pages change,
+    onenote/0039+0041): enumerate a section's pages straight from the
+    hierarchy, independent of the search index — `onenote_search`
+    (`FindPages`) silently omits pages the index has not picked up, so it
+    cannot be the only route to a `pageId`."""
+
+    section_id: str = Field(alias="sectionId")
+
+
 class CreatePageRequest(_AliasedModel):
     """Input for `onenote_create_page`. `section_id` is resolved by the
     tool layer (a later batch) from a notebook/section name pair, checked

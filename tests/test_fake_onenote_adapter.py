@@ -237,3 +237,47 @@ def test_update_page_raises_when_unavailable():
         adapter.update_page(
             "PAGE-2", "Cuerpo", datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc)
         )
+
+
+# --- list_pages() (add-onenote-list-pages) ---
+
+
+def test_list_pages_filters_seeded_pages_by_section_id():
+    in_section = PageDetail(
+        page_id="PAGE-S1",
+        title="COS - test table with formatting",
+        body_text="Title 1",
+        notebook_name="z - Test Notebook",
+        section_name="New Section 1",
+        section_id="{SEC-1}{1}{B0}",
+    )
+    elsewhere = PageDetail(
+        page_id="PAGE-S2",
+        title="Acta",
+        body_text="",
+        notebook_name="Informa - Governance",
+        section_name="Actas",
+        section_id="{SEC-2}{1}{B0}",
+    )
+    adapter = FakeOneNoteAdapter(pages=[in_section, elsewhere])
+
+    rows = adapter.list_pages("{SEC-1}{1}{B0}")
+
+    assert [r.page_id for r in rows] == ["PAGE-S1"]
+    assert rows[0].section_id == "{SEC-1}{1}{B0}"
+
+
+def test_list_pages_unknown_section_returns_empty_list():
+    """The fake stays as dumb as the bridge row emitter — section
+    existence/diagnostics are the TOOL layer's job (it resolves via
+    get_hierarchy first), so an unknown id here is just zero rows."""
+    adapter = FakeOneNoteAdapter(pages=[INVOICE])
+
+    assert adapter.list_pages("{NOPE}{1}{B0}") == []
+
+
+def test_list_pages_unavailable_raises():
+    adapter = FakeOneNoteAdapter(unavailable=True)
+
+    with pytest.raises(OneNoteUnavailableError):
+        adapter.list_pages("{SEC-1}{1}{B0}")

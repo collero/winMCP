@@ -77,6 +77,17 @@ class FakeOneNoteAdapter:
                 break
         return matches
 
+    def list_pages(self, section_id: str) -> list[PageSummary]:
+        """Seeded pages whose `section_id` matches, in seed order — as
+        dumb as the real bridge's row emitter (empty list for an unknown
+        section; existence diagnostics are the tool layer's job)."""
+        self._check_available()
+        return [
+            _to_summary(page)
+            for page in self._pages.values()
+            if page.section_id == section_id
+        ]
+
     def get_hierarchy(self) -> list[NotebookNode]:
         self._check_available()
         return self._hierarchy

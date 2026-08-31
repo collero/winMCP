@@ -19,6 +19,8 @@ happens at the tool layer (`tools/onenote.py`, a later batch), not here —
 see the onenote-write-page spec's "Writable Notebook Allowlist"
 requirement and design.md's "Allowlist enforcement point" decision.
 """
+import html
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +73,23 @@ class OneNotePort(Protocol):
 
         Raises OneNoteUnavailableError if OneNote/the bridge cannot be
         reached at all. An empty result is not an error.
+        """
+        ...
+
+    def list_pages(self, section_id: str) -> list[PageSummary]:
+        """Return every page of the section identified by `section_id`,
+        in hierarchy (notebook) order, straight from a section-scoped
+        `GetHierarchy` — NOT the search index, so pages `FindPages` has
+        not indexed yet are included (add-onenote-list-pages change,
+        onenote/0039+0041). Rows carry an empty `notebook_name` — the
+        scoped subtree has no Notebook ancestor; the tool layer resolves
+        and fills it. `last_modified` is hierarchy-sourced and can lag
+        the page XML's own value — `get_page` is the write-grade read.
+
+        Raises OneNoteUnavailableError if OneNote/the bridge cannot be
+        reached at all (including an unresolvable `section_id` reaching
+        the bridge — the tool layer pre-resolves ids to prevent that).
+        An empty section is `[]`, not an error.
         """
         ...
 
@@ -219,10 +238,12 @@ def _extract_title_and_body(page_xml: str) -> tuple[str, str]:
     root element — never hardcoded to a fixed version string like
     `.../2013/onenote` — since it is OneNote-version dependent. Per the
     "Page Content Extraction" requirement, the title comes from the
-    nested `Title/OE/T` CDATA text and the body is the concatenation of
-    each top-level `Outline/OEChildren/OE` paragraph's `T` CDATA text,
-    joined by `"\\n"`. `ElementTree` treats CDATA content the same as
-    regular element text, so no special unwrapping is needed.
+    nested `Title/OE/T` CDATA text and the body is the depth-first
+    concatenation of each `Outline` paragraph's `T` CDATA text (nested
+    bullets included, via `_collect_oe_text`), joined by `"\\n"`.
+    `ElementTree` treats CDATA content the same as regular element text,
+    so no special unwrapping is needed — but the CDATA payload itself is
+    HTML rich text, flattened per run by `_flatten_rich_text`.
 
     This is the ONE place OneNote page XML is parsed (see the module
     docstring's deviation note) — done here in Python, unit-tested
@@ -234,16 +255,46 @@ def _extract_title_and_body(page_xml: str) -> tuple[str, str]:
     ns = {"one": ns_uri}
 
     title_el = root.find(".//one:Title//one:T", ns)
-    title = (title_el.text or "") if title_el is not None else ""
+    title = _flatten_rich_text(title_el.text or "") if title_el is not None else ""
 
     paragraphs: list[str] = []
     for oe in root.findall("one:Outline/one:OEChildren/one:OE", ns):
-        text_el = oe.find("one:T", ns)
-        if text_el is not None and text_el.text:
-            paragraphs.append(text_el.text)
+        _collect_oe_text(oe, ns, paragraphs)
     body_text = "\n".join(paragraphs)
 
     return title, body_text
+
+
+# A one:T's CDATA payload is HTML rich text, not plain text (onenote/0037,
+# live-verified): formatted runs arrive wrapped in <span ...> tags whose
+# attributes may contain raw newlines, soft line breaks arrive as <br>, and
+# literal angle brackets arrive HTML-escaped. Tags are stripped BEFORE
+# entities are unescaped so user text like `&lt;span&gt;` survives.
+_BR_RE = re.compile(r"<br\b[^>]*>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def _flatten_rich_text(cdata: str) -> str:
+    text = _BR_RE.sub("\n", cdata)
+    text = _TAG_RE.sub("", text)
+    return html.unescape(text)
+
+
+def _collect_oe_text(oe: ElementTree.Element, ns: dict[str, str], out: list[str]) -> None:
+    """Depth-first paragraph collection: an OE's own `T` text, then any
+    OEChildren nested directly under it — so indented bullets degrade into
+    the flat view instead of vanishing (onenote/0037's live page carried a
+    nested bullet the old top-level-only walk dropped). Table cell text is
+    NOT reached: a Cell's OEChildren belongs to the Cell element, which
+    this walk never enters — `bodyTextIncomplete` covers that loss."""
+    text_el = oe.find("one:T", ns)
+    if text_el is not None and text_el.text:
+        flattened = _flatten_rich_text(text_el.text)
+        if flattened:
+            out.append(flattened)
+    for oe_children in oe.findall("one:OEChildren", ns):
+        for child in oe_children.findall("one:OE", ns):
+            _collect_oe_text(child, ns, out)
 
 
 def _row_to_page_summary(row: dict[str, Any]) -> PageSummary:
@@ -309,6 +360,30 @@ def _row_to_page_detail(row: dict[str, Any]) -> PageDetail:
     )
 
 
+# hrTimeOut in the OneNote COM error table: "The action timed out."
+# Live-characterised (onenote/0045): the FIRST COM call after a quiet
+# period (deploy, overnight) can throw it and the identical call succeeds
+# on re-issue. ENH-004 (onenote/0047): make the error LEGIBLE — say it is
+# a transient and retry-safe, so a caller can act without a lookup table —
+# but never auto-retry here, which would hide the phenomenon's frequency
+# from the caller entirely.
+_COLD_START_TIMEOUT_MARKER = "0x80042023"
+
+
+def _to_unavailable(exc: PsBridgeTransportError) -> OneNoteUnavailableError:
+    """Map a transport failure to `OneNoteUnavailableError`, keeping the
+    transport's diagnostics verbatim; a cold-start COM timeout gets an
+    actionable hint PREPENDED (the excerpt-cap lesson from onenote/0021:
+    lead with what the caller cannot reconstruct)."""
+    text = str(exc)
+    if _COLD_START_TIMEOUT_MARKER in text:
+        return OneNoteUnavailableError(
+            "COM call timed out (0x80042023 hrTimeOut) - transient, typically the "
+            "first OneNote call after a quiet period; safe to re-issue once. " + text
+        )
+    return OneNoteUnavailableError(text)
+
+
 class OneNoteAdapter:
     """Real, `PsBridgeTransport`-backed `OneNotePort` implementation.
     Invokes a pinned, absolute Windows PowerShell 5.1 executable against
@@ -353,14 +428,21 @@ class OneNoteAdapter:
         try:
             rows, _truncated = self._invoke("FindPages", {"query": query})
         except PsBridgeTransportError as exc:
-            raise OneNoteUnavailableError(str(exc)) from exc
+            raise _to_unavailable(exc) from exc
         return [_row_to_page_summary(row) for row in rows[:top_n]]
+
+    def list_pages(self, section_id: str) -> list[PageSummary]:
+        try:
+            rows, _truncated = self._invoke("ListPages", {"sectionId": section_id})
+        except PsBridgeTransportError as exc:
+            raise _to_unavailable(exc) from exc
+        return [_row_to_page_summary(row) for row in rows]
 
     def get_hierarchy(self) -> list[NotebookNode]:
         try:
             rows, _truncated = self._invoke("GetHierarchy", {})
         except PsBridgeTransportError as exc:
-            raise OneNoteUnavailableError(str(exc)) from exc
+            raise _to_unavailable(exc) from exc
 
         notebooks: dict[str, NotebookNode] = {}
         for row in rows:
@@ -379,7 +461,7 @@ class OneNoteAdapter:
         except PsBridgeTransportError as exc:
             if _is_marked(exc, _NOT_FOUND_MARKERS):
                 raise OneNotePageNotFoundError(_bridge_error_text(exc)) from exc
-            raise OneNoteUnavailableError(str(exc)) from exc
+            raise _to_unavailable(exc) from exc
         if not rows:
             raise OneNotePageNotFoundError(f"No page with pageId {page_id!r}")
         return _row_to_page_detail(rows[0])
@@ -391,7 +473,7 @@ class OneNoteAdapter:
                 {"sectionId": section_id, "title": title, "bodyText": body_text},
             )
         except PsBridgeTransportError as exc:
-            raise OneNoteUnavailableError(str(exc)) from exc
+            raise _to_unavailable(exc) from exc
         if not rows:
             raise OneNoteUnavailableError("OneNote bridge returned no page after create")
         return _row_to_page_detail(rows[0])
@@ -423,7 +505,7 @@ class OneNoteAdapter:
                 raise OneNotePageConflictError(_bridge_error_text(exc)) from exc
             if _is_marked(exc, _NOT_FOUND_MARKERS):
                 raise OneNotePageNotFoundError(_bridge_error_text(exc)) from exc
-            raise OneNoteUnavailableError(str(exc)) from exc
+            raise _to_unavailable(exc) from exc
         if not rows:
             raise OneNotePageNotFoundError(f"No page with pageId {page_id!r}")
         return _row_to_page_detail(rows[0])

@@ -431,7 +431,7 @@ def test_mail_drafts_family_zero_hits_passes_without_chaining():
 
 
 def test_expected_tools_matches_server_registered_names():
-    """EXPECTED_TOOLS must equal exactly the 15 tools server.py registers
+    """EXPECTED_TOOLS must equal exactly the 16 tools server.py registers
     (per the smoke-test-coverage spec's "Expected Tool Set Matches
     Registered Tools" requirement) - checked against fake adapters so this
     is import-time verifiable on Linux, no win32com/subprocess needed."""
@@ -744,9 +744,9 @@ def test_read_installed_tools_returns_empty_set_for_empty_tools_list(tmp_path):
     assert result == set()
 
 
-def test_default_all_tools_is_the_full_15_tool_set():
+def test_default_all_tools_is_the_full_16_tool_set():
     assert smoke_test._DEFAULT_ALL_TOOLS == EXPECTED_TOOLS
-    assert len(smoke_test._DEFAULT_ALL_TOOLS) == 15
+    assert len(smoke_test._DEFAULT_ALL_TOOLS) == 16
 
 
 def test_compute_expected_tools_falls_back_to_default_when_installed_is_none():
