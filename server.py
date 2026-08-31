@@ -538,7 +538,16 @@ def create_server(
             an absolute `scope` subtree. At least one of filename/phrase is
             required; `scope` (if given) must fall within a configured or
             default allowed search root. Returns `results` plus a
-            `resultsTruncated` flag."""
+            `resultsTruncated` flag.
+
+            THE TWO LEGS HAVE DIFFERENT REACH (file_write/0077): the
+            `phrase` leg sees only locations the Windows Search indexer has
+            crawled; the `filename` leg walks the roots on disk. A term
+            found by one may be legitimately absent from the other — e.g. a
+            root outside the index yields `phrase` [] while `filename`
+            still returns its files. `kind` is index-sourced: populated on
+            `phrase` rows (multi-value kinds joined as `"link; folder"`),
+            always null on walk-leg rows."""
             request = FileSearchRequest(filename=filename, phrase=phrase, scope=scope)
             try:
                 return file_search(request, _file_search_adapter())
