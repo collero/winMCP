@@ -234,6 +234,10 @@ def test_get_message_calls_coinitialize_before_dispatch(mocker):
 
 
 def test_inbox_search_restricts_on_received_time(mocker):
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     from tools.mail_adapter import OutlookMailAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -275,8 +279,10 @@ def test_inbox_search_restricts_on_received_time(mocker):
     # tests/test_outlook_adapter.py's identically-motivated assertion.
     assert restrict_arg.startswith('@SQL="urn:schemas:httpmail:datereceived" >=')
     assert '"urn:schemas:httpmail:datereceived" <=' in restrict_arg
-    assert "2026-08-01" in restrict_arg
-    assert "2026-08-31" in restrict_arg
+    # BUG-010: the Restrict window is padded one day each side; the exact
+    # bounds are enforced by the python re-check on true-UTC values.
+    assert "2026-07-31" in restrict_arg
+    assert "2026-09-01" in restrict_arg
 
     assert len(results) == 1
     assert results[0].entry_id == "M1"
@@ -524,8 +530,11 @@ def _upper_bound_narrow_on_swap_case(
     restrict_arg = items.Restrict.call_args.args[0]
     assert restrict_arg.startswith(f"@SQL={dasl_prop} >=")
     assert f"{dasl_prop} <=" in restrict_arg
-    assert _dasl_datetime(date_from) in restrict_arg
-    assert _dasl_datetime(date_to) in restrict_arg
+    # BUG-010: the emitted literals carry the +/- 1 day padding; the exact
+    # bounds are enforced by the python re-check (whose behavior the
+    # in/out-of-bounds assertion below still pins).
+    assert _dasl_datetime(date_from - timedelta(days=1)) in restrict_arg
+    assert _dasl_datetime(date_to + timedelta(days=1)) in restrict_arg
     # No Jet bracket-property date comparison must remain.
     assert not re.search(r"\[ReceivedTime\]|\[SentOn\]", restrict_arg)
 
@@ -535,6 +544,10 @@ def _upper_bound_narrow_on_swap_case(
 def test_inbox_search_upper_bound_2026_06_02_day_lt_month_returns_window_items(mocker):
     """Upper-bound mirror of the lower-bound sweep for `folder="inbox"`:
     `date_to`'s day (2) is less than its month (6)."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     date_from = datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc)
     date_to = datetime(2026, 6, 2, 23, 59, 59, tzinfo=timezone.utc)
 
@@ -552,6 +565,10 @@ def test_inbox_search_upper_bound_2026_06_02_day_lt_month_returns_window_items(m
 def test_sent_search_upper_bound_2026_11_05_day_lt_month_returns_window_items(mocker):
     """Upper-bound mirror for `folder="sent"`: `date_to`'s day (5) is less
     than its month (11)."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     date_from = datetime(2026, 10, 20, 0, 0, tzinfo=timezone.utc)
     date_to = datetime(2026, 11, 5, 23, 59, 59, tzinfo=timezone.utc)
 
@@ -569,6 +586,10 @@ def test_sent_search_upper_bound_2026_11_05_day_lt_month_returns_window_items(mo
 def test_inbox_search_upper_bound_2026_12_03_day_lt_month_returns_window_items(mocker):
     """Upper-bound mirror for `folder="inbox"`: `date_to`'s day (3) is less
     than its month (12)."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     date_from = datetime(2026, 11, 20, 0, 0, tzinfo=timezone.utc)
     date_to = datetime(2026, 12, 3, 23, 59, 59, tzinfo=timezone.utc)
 
@@ -614,9 +635,10 @@ def test_inbox_search_restrict_filter_exact_dasl_string_both_bounds_no_bracket_s
 
     items.Restrict.assert_called_once()
     restrict_arg = items.Restrict.call_args.args[0]
+    # BUG-010: literals carry the +/- 1 day padding.
     assert restrict_arg == (
-        '@SQL="urn:schemas:httpmail:datereceived" >= \'2026-06-02 08:00\' '
-        'AND "urn:schemas:httpmail:datereceived" <= \'2026-11-05 17:30\''
+        '@SQL="urn:schemas:httpmail:datereceived" >= \'2026-06-01 08:00\' '
+        'AND "urn:schemas:httpmail:datereceived" <= \'2026-11-06 17:30\''
     )
     assert not re.search(r"\[ReceivedTime\]", restrict_arg)
 
@@ -648,9 +670,10 @@ def test_sent_search_restrict_filter_exact_dasl_string_both_bounds_no_bracket_sy
 
     items.Restrict.assert_called_once()
     restrict_arg = items.Restrict.call_args.args[0]
+    # BUG-010: literals carry the +/- 1 day padding.
     assert restrict_arg == (
-        '@SQL="urn:schemas:httpmail:datesent" >= \'2026-06-02 08:00\' '
-        'AND "urn:schemas:httpmail:datesent" <= \'2026-11-05 17:30\''
+        '@SQL="urn:schemas:httpmail:datesent" >= \'2026-06-01 08:00\' '
+        'AND "urn:schemas:httpmail:datesent" <= \'2026-11-06 17:30\''
     )
     assert not re.search(r"\[SentOn\]", restrict_arg)
 
@@ -860,7 +883,13 @@ def test_sender_haystack_per_folder(mocker):
 
 
 def test_naive_com_datetime_converted_to_aware_local_time(mocker):
+    """BUG-010 updated semantics: a naive COM value is LOCAL wall-clock;
+    it now converts to the TRUE UTC instant (not merely "gets a label").
+    Pinned to Europe/Madrid (CEST, +2 in August) for determinism."""
     from tools.mail_adapter import OutlookMailAdapter
+    from zoneinfo import ZoneInfo
+
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid"))
 
     dispatch_mock = _install_fake_win32com(mocker)
     outlook_app = mocker.Mock()
@@ -888,8 +917,7 @@ def test_naive_com_datetime_converted_to_aware_local_time(mocker):
 
     results = adapter.search(MailFolder.INBOX, date_from=date_from, date_to=date_to)
 
-    assert results[0].date.tzinfo is not None
-    assert results[0].date.replace(tzinfo=None) == naive_received
+    assert results[0].date == datetime(2026, 8, 10, 7, 0, tzinfo=timezone.utc)
 
     # get_message(): same normalization applies.
     naive_received_detail = datetime(2026, 8, 10, 10, 0)
@@ -903,8 +931,7 @@ def test_naive_com_datetime_converted_to_aware_local_time(mocker):
 
     detail = adapter.get_message("M2")
 
-    assert detail.date.tzinfo is not None
-    assert detail.date.replace(tzinfo=None) == naive_received_detail
+    assert detail.date == datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc)
 
 
 def test_search_aware_com_received_time_vs_naive_request_bound_does_not_raise(mocker):
@@ -1087,6 +1114,10 @@ def test_get_message_falls_back_to_sent_on_when_received_time_is_falsy(mocker):
     `ReceivedTime`, so this test exercises the fallback branch: a genuine
     Sent Items message, where `ReceivedTime` is falsy (`None`) and `SentOn`
     is populated — the returned date must come from `SentOn`."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     from tools.mail_adapter import OutlookMailAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -1216,6 +1247,10 @@ def test_resolve_date_falls_back_to_last_modification_time_when_received_and_sen
     """outlook-mail-adapter spec's "Date Resolution Fallback Chain"
     requirement / "Draft with no ReceivedTime/SentOn falls back to
     LastModificationTime" scenario, for both search() and get_message()."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     from tools.mail_adapter import OutlookMailAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -1536,6 +1571,10 @@ def test_inbox_sent_backward_compatible_no_regression(mocker):
     the inbox mock (or ReceivedTime on the sent mock) would resolve to an
     auto-generated Mock instead of a real value, and the wrong field could
     silently win without a bare-attribute-access crash to reveal it."""
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     from tools.mail_adapter import OutlookMailAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -1866,6 +1905,10 @@ class _FakeDraftItem:
 
 
 def test_create_draft_creates_mailitem_sets_fields_and_saves(mocker):
+    # BUG-010: this test predates the local-mislabeled-UTC fix and seeds
+    # honest-UTC fixtures; pin the "local" zone to UTC so the reinterpretation
+    # is the identity and the test keeps checking what it always checked.
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=timezone.utc)
     from tools.mail_adapter import OutlookMailAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -1927,3 +1970,113 @@ def test_create_draft_save_failure_maps_to_unavailable(mocker):
         adapter.create_draft(to=["a@b.c"], cc=[], subject="s", body="b")
 
     assert "MAPI store offline" in str(excinfo.value)
+
+
+# --- BUG-010 (mail/0001-0002): Outlook COM datetimes are LOCAL wall-clock
+# mislabeled UTC. All COM reads now pass through from_com_datetime; caller
+# bounds do not. The fixtures below mislabel exactly the way pywin32 does.
+
+_MISLABEL = timezone(timedelta(0), "GMT Standard Time")
+
+
+def _drafts_search_scaffold(mocker, item):
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook_app = mocker.Mock()
+    dispatch_mock.return_value = outlook_app
+    namespace = mocker.Mock()
+    outlook_app.GetNamespace.return_value = namespace
+    folder = mocker.Mock(name="DraftsFolder")
+    namespace.GetDefaultFolder.return_value = folder
+    items = mocker.Mock(name="Items")
+    folder.Items = items
+    restricted = mocker.Mock(name="Restricted")
+    items.Restrict.return_value = restricted
+    restricted.__iter__ = mocker.Mock(return_value=iter([item]))
+    return items
+
+
+def test_search_drafts_finds_fresh_draft_despite_mislabeled_future_receivedtime(mocker):
+    """The live defect verbatim: a draft created at 15:36:50Z reads
+    ReceivedTime 17:36:50 "UTC" (local wall-clock, lying label). A window
+    ending at the true now must MATCH it, and the returned date must be
+    the TRUE instant."""
+    from tools.mail_adapter import OutlookMailAdapter
+    from zoneinfo import ZoneInfo
+
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid"))
+    draft = mocker.Mock(
+        Class=43,
+        EntryID="D1",
+        Subject="[WINMCP TEST] fixture",
+        SenderName="",
+        SenderEmailAddress="",
+        ReceivedTime=datetime(2026, 8, 31, 17, 36, 50, tzinfo=_MISLABEL),
+        Attachments=mocker.Mock(Count=0),
+    )
+    items = _drafts_search_scaffold(mocker, draft)
+    adapter = OutlookMailAdapter()
+
+    results = adapter.search(
+        MailFolder.DRAFTS,
+        date_from=datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc),
+        date_to=datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert [r.entry_id for r in results] == ["D1"]
+    assert results[0].date == datetime(2026, 8, 31, 15, 36, 50, tzinfo=timezone.utc)
+    # Restrict window is PADDED +/- 1 day: the DASL layer's frame cannot be
+    # trusted at the edges, so it pre-narrows generously and the (now
+    # honest) python re-check enforces the exact bounds.
+    restrict_arg = items.Restrict.call_args[0][0]
+    assert "2026-08-30 15:00" in restrict_arg
+    assert "2026-09-01 16:00" in restrict_arg
+
+
+def test_search_drafts_sentinel_receivedtime_falls_through_to_lastmodification(mocker):
+    """A truthy 4501-01-01 unset sentinel must not satisfy the resolve
+    chain — it falls through to LastModificationTime (the latent trap
+    _resolve_date's falsy check carried since birth)."""
+    from tools.mail_adapter import OutlookMailAdapter
+    from zoneinfo import ZoneInfo
+
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid"))
+    draft = mocker.Mock(
+        Class=43,
+        EntryID="D2",
+        Subject="old draft",
+        SenderName="",
+        SenderEmailAddress="",
+        ReceivedTime=datetime(4501, 1, 1, tzinfo=_MISLABEL),
+        SentOn=datetime(4501, 1, 1, tzinfo=_MISLABEL),
+        LastModificationTime=datetime(2026, 8, 31, 17, 36, 50, tzinfo=_MISLABEL),
+        Attachments=mocker.Mock(Count=0),
+    )
+    items = _drafts_search_scaffold(mocker, draft)
+    adapter = OutlookMailAdapter()
+
+    results = adapter.search(
+        MailFolder.DRAFTS,
+        date_from=datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc),
+        date_to=datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert [r.entry_id for r in results] == ["D2"]
+    assert results[0].date == datetime(2026, 8, 31, 15, 36, 50, tzinfo=timezone.utc)
+
+
+def test_create_draft_saved_at_is_true_utc_not_mislabeled_local(mocker):
+    from tools.mail_adapter import OutlookMailAdapter
+    from zoneinfo import ZoneInfo
+
+    mocker.patch("tools.mail_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid"))
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook = mocker.Mock(name="OutlookApplication")
+    item = _FakeDraftItem()
+    item.LastModificationTime = datetime(2026, 8, 31, 17, 36, 50, tzinfo=_MISLABEL)
+    outlook.CreateItem.return_value = item
+    dispatch_mock.return_value = outlook
+
+    adapter = OutlookMailAdapter()
+    draft = adapter.create_draft(to=["a@b.c"], cc=[], subject="s", body="b")
+
+    assert draft.saved_at == datetime(2026, 8, 31, 15, 36, 50, tzinfo=timezone.utc)

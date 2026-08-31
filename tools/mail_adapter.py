@@ -12,10 +12,11 @@ folder->(GetDefaultFolder id, DASL date field) lookup in the real adapter
 (a later batch), so one adapter/tool pair covers both folders instead of
 four — see design.md's "Folder parameterization" decision.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from models.schemas import DraftDetail, MailFolder, MessageDetail, MessageSummary
+from tools.com_datetime import from_com_datetime
 from tools.errors import MailFolderNotFoundError, MessageNotFoundError, OutlookUnavailableError
 from tools.settings import load_settings, local_timezone
 
@@ -182,7 +183,7 @@ def _sender_haystack(item: Any, folder: MailFolder | None) -> str:
     return f"{name} {address}".lower()
 
 
-def _resolve_date(item: Any) -> Any:
+def _resolve_date(item: Any, tz: Any) -> datetime | None:
     """Pick the message's date via the fallback chain used by
     `get_message()` (all folders) and by `search()` for `drafts`/
     `folder_path` (mail-reading-depth change's "Date Resolution Fallback
@@ -190,14 +191,18 @@ def _resolve_date(item: Any) -> Any:
     `LastModificationTime`. A real Outlook MailItem retrieved by entryId
     exposes all three: Inbox items have a populated `ReceivedTime`; Sent
     Items have a populated `SentOn`; Drafts/custom-folder items may have
-    neither populated, but always have `LastModificationTime`."""
-    received = getattr(item, "ReceivedTime", None)
-    if received:
-        return received
-    sent = getattr(item, "SentOn", None)
-    if sent:
-        return sent
-    return getattr(item, "LastModificationTime", None)
+    neither populated, but always have `LastModificationTime`.
+
+    BUG-010: every candidate passes through `from_com_datetime`, which
+    both fixes the local-mislabeled-UTC read (returning TRUE UTC) and
+    treats the truthy year-4501 unset sentinel as absent — the old bare
+    truthiness check would have accepted a 4501 `ReceivedTime` as a real
+    date. Returns a true-UTC aware datetime or `None`."""
+    for field in ("ReceivedTime", "SentOn", "LastModificationTime"):
+        converted = from_com_datetime(getattr(item, field, None), tz)
+        if converted is not None:
+            return converted
+    return None
 
 
 def _matches_date_bounds(
@@ -223,10 +228,13 @@ def _matches_date_bounds(
         return True
     if date_value is None:
         return False
-    aware = _to_aware(date_value, tz)
-    if date_from is not None and aware < _to_aware(date_from, tz):
+    # BUG-010: `date_value` arrives ALREADY converted to true UTC by
+    # `from_com_datetime` (via `_resolve_date` or a wrapped direct field
+    # read) — never re-normalize it here; only the caller-supplied bounds
+    # (honestly labeled, possibly naive) go through `_to_aware`.
+    if date_from is not None and date_value < _to_aware(date_from, tz):
         return False
-    if date_to is not None and aware > _to_aware(date_to, tz):
+    if date_to is not None and date_value > _to_aware(date_to, tz):
         return False
     return True
 
@@ -273,7 +281,9 @@ def _to_summary(item: Any, tz: Any, date_value: Any) -> MessageSummary:
         subject=item.Subject or "",
         sender=getattr(item, "SenderName", "") or "",
         sender_address=getattr(item, "SenderEmailAddress", "") or "",
-        date=_to_aware(date_value, tz),
+        # BUG-010: `date_value` is already true-UTC (from_com_datetime) —
+        # `tz` stays a parameter only for callers that still need it.
+        date=date_value,
         has_attachments=item.Attachments.Count > 0,
     )
 
@@ -378,9 +388,18 @@ class OutlookMailAdapter:
                     # property URN, not Jet's bare bracket-property syntax
                     # — see `_dasl_datetime`'s docstring for the live
                     # evidence of why the bracket form is still unsafe.
+                    #
+                    # BUG-010: the window is PADDED one day each side. The
+                    # DASL layer's comparison frame differs per property
+                    # (PT_SYSTIME proptags compare in true UTC, live-
+                    # verified; the urn:schemas frames are unverified), so
+                    # Restrict() is only trusted to pre-narrow generously;
+                    # the exact bounds are enforced by the python re-check
+                    # below, which since BUG-010 compares TRUE-UTC values.
+                    pad = timedelta(days=1)
                     restrict = (
-                        f"@SQL={dasl_prop} >= '{_dasl_datetime(date_from)}' "
-                        f"AND {dasl_prop} <= '{_dasl_datetime(date_to)}'"
+                        f"@SQL={dasl_prop} >= '{_dasl_datetime(date_from - pad)}' "
+                        f"AND {dasl_prop} <= '{_dasl_datetime(date_to + pad)}'"
                     )
                     restricted = items.Restrict(restrict)
                 else:
@@ -413,10 +432,10 @@ class OutlookMailAdapter:
             if not _is_mail_item(item):
                 continue
             if use_fallback_date:
-                date_value = _resolve_date(item)
+                date_value = _resolve_date(item, tz)
             else:
                 date_field = "ReceivedTime" if resolved_folder == MailFolder.INBOX else "SentOn"
-                date_value = getattr(item, date_field)
+                date_value = from_com_datetime(getattr(item, date_field), tz)
             if not _matches_date_bounds(date_value, date_from, date_to, tz):
                 # For folder_path searches this is the only date filter
                 # (Restrict() is always skipped there). For folder-mapped
@@ -467,14 +486,13 @@ class OutlookMailAdapter:
             item.Body = body
             item.Save()
             entry_id = item.EntryID
-            saved_at = getattr(item, "LastModificationTime", None)
-            if saved_at is not None:
-                # Same convention as every other Outlook date read
-                # (_to_aware + local_timezone): naive values get the local
-                # tz attached; already-aware pywintypes values pass
-                # through. See ISSUES.md ENH-005 for the open question
-                # about pywintypes' UTC label on local wall-clock values.
-                saved_at = _to_aware(saved_at, local_timezone())
+            # BUG-010 (supersedes ENH-005's open question): the COM read
+            # is local wall-clock mislabeled UTC — from_com_datetime
+            # reinterprets and returns TRUE UTC (or None for the unset
+            # sentinel).
+            saved_at = from_com_datetime(
+                getattr(item, "LastModificationTime", None), local_timezone()
+            )
         except Exception as exc:
             raise OutlookUnavailableError(f"Could not save draft: {exc}") from exc
         return DraftDetail(
@@ -506,7 +524,7 @@ class OutlookMailAdapter:
             raise MessageNotFoundError(f"No message with entryId {entry_id!r}")
 
         tz = local_timezone()
-        summary = _to_summary(item, tz, _resolve_date(item))
+        summary = _to_summary(item, tz, _resolve_date(item, tz))
         # Attachments is 1-indexed in Outlook's COM API — see the
         # outlook-mail-adapter spec's "Attachment Filename Enumeration"
         # requirement.

@@ -150,6 +150,9 @@ def test_get_event_calls_coinitialize_before_dispatch(mocker):
 
 
 def test_search_builds_dasl_restrict_and_converts_tz(mocker):
+    # BUG-010: legacy test seeds honest-UTC/naive fixtures; pin the local
+    # zone to UTC so from_com_datetime is the identity here.
+    mocker.patch("tools.outlook_adapter.local_timezone", return_value=timezone.utc)
     from tools.outlook_adapter import OutlookCalendarAdapter
 
     dispatch_mock = _install_fake_win32com(mocker)
@@ -1034,3 +1037,47 @@ def test_calendar_and_mail_dasl_datetime_emit_identical_literal():
     mail_literal = mail_dasl_datetime(value)
 
     assert calendar_literal == mail_literal == "2026-03-12 09:05"
+
+
+# --- BUG-010 (mail/0001-0002): COM Start/End are LOCAL wall-clock
+# mislabeled UTC — calendar reads pass through from_com_datetime too.
+
+
+def test_search_event_start_mislabeled_local_is_returned_as_true_utc(mocker):
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo
+    from tools.outlook_adapter import OutlookCalendarAdapter
+
+    mocker.patch(
+        "tools.outlook_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid")
+    )
+    mislabel = timezone(_td(0), "GMT Standard Time")
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook_app = mocker.Mock()
+    dispatch_mock.return_value = outlook_app
+    namespace = mocker.Mock()
+    outlook_app.GetNamespace.return_value = namespace
+    folder = mocker.Mock(name="Calendar")
+    namespace.GetDefaultFolder.return_value = folder
+    items = mocker.Mock(name="Items")
+    folder.Items = items
+    restricted = mocker.Mock(name="Restricted")
+    items.Restrict.return_value = restricted
+    event = mocker.Mock(
+        EntryID="E1",
+        Subject="Reunión",
+        # true instant 10:00Z-11:00Z; COM reports Madrid wall-clock 12:00-13:00 "UTC"
+        Start=datetime(2026, 8, 31, 12, 0, tzinfo=mislabel),
+        End=datetime(2026, 8, 31, 13, 0, tzinfo=mislabel),
+    )
+    restricted.__iter__ = mocker.Mock(return_value=iter([event]))
+
+    adapter = OutlookCalendarAdapter()
+    results = adapter.search(
+        date_from=datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc),
+        date_to=datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert [r.entry_id for r in results] == ["E1"]
+    assert results[0].start == datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
+    assert results[0].end == datetime(2026, 8, 31, 11, 0, tzinfo=timezone.utc)

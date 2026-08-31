@@ -545,3 +545,38 @@ def test_search_due_date_sentinel_treated_as_no_due_date_by_filters(mocker):
         include_no_due_date=False,
     )
     assert excluded == []
+
+
+# --- BUG-010 (mail/0001-0002): COM DueDate is LOCAL wall-clock mislabeled
+# UTC — task reads pass through from_com_datetime (which also owns the
+# year-4501 sentinel guard now).
+
+
+def test_get_task_due_date_mislabeled_local_is_returned_as_true_utc(mocker):
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo
+    from tools.task_adapter import OutlookTaskAdapter
+
+    mocker.patch(
+        "tools.task_adapter.local_timezone", return_value=ZoneInfo("Europe/Madrid")
+    )
+    mislabel = timezone(_td(0), "GMT Standard Time")
+    dispatch_mock = _install_fake_win32com(mocker)
+    outlook_app = mocker.Mock()
+    dispatch_mock.return_value = outlook_app
+    namespace = mocker.Mock()
+    outlook_app.GetNamespace.return_value = namespace
+    item = mocker.Mock(
+        EntryID="T1",
+        Subject="Entregar informe",
+        DueDate=datetime(2026, 8, 31, 12, 0, tzinfo=mislabel),  # true 10:00Z
+        Status=0,
+        Complete=False,
+        Body="",
+    )
+    namespace.GetItemFromID.return_value = item
+
+    adapter = OutlookTaskAdapter()
+    detail = adapter.get_task("T1")
+
+    assert detail.due_date == datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)

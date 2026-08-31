@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from models.schemas import TaskDetail, TaskStatus, TaskSummary
 from tools.errors import OutlookUnavailableError, TaskNotFoundError
+from tools.com_datetime import from_com_datetime
 from tools.settings import load_settings, local_timezone
 
 # Sort-key stand-in for a `None` due_date (search-result-caps change) — a
@@ -220,8 +221,9 @@ class OutlookTaskAdapter:
             if status is not None and mapped_status != status:
                 continue
 
-            raw_due_date = _normalize_due_date(item.DueDate)
-            due_date = _to_aware(raw_due_date, tz) if raw_due_date is not None else None
+            # BUG-010: from_com_datetime reinterprets the mislabeled local
+            # read as TRUE UTC and owns the 4501 sentinel guard.
+            due_date = from_com_datetime(item.DueDate, tz)
             if not _passes_due_date_filter(due_date, date_from, date_to, include_no_due_date):
                 continue
 
@@ -263,8 +265,8 @@ class OutlookTaskAdapter:
 
         tz = local_timezone()
         mapped_status, is_complete = _map_status(item.Status, item.Complete)
-        raw_due_date = _normalize_due_date(item.DueDate)
-        due_date = _to_aware(raw_due_date, tz) if raw_due_date is not None else None
+        # BUG-010: see search() — one shared conversion, sentinel included.
+        due_date = from_com_datetime(item.DueDate, tz)
         return TaskDetail(
             entry_id=item.EntryID,
             subject=item.Subject,

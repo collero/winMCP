@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from models.schemas import EventDetail, EventSummary
 from tools.errors import EventNotFoundError, OutlookUnavailableError
+from tools.com_datetime import from_com_datetime
 from tools.settings import load_settings, local_timezone
 
 _DEFAULT_CALENDAR_FOLDER_ID = 9  # olFolderCalendar
@@ -203,8 +204,11 @@ class OutlookCalendarAdapter:
         subject_needle = subject.lower() if subject else None
         results: list[EventSummary] = []
         for item in restricted:
-            start = _to_aware(item.Start, tz)
-            end = _to_aware(item.End, tz)
+            # BUG-010 (mail/0001-0002): COM Start/End are LOCAL wall-clock
+            # mislabeled UTC — from_com_datetime reinterprets to TRUE UTC.
+            # Caller bounds above keep _to_aware (honest labels).
+            start = from_com_datetime(item.Start, tz)
+            end = from_com_datetime(item.End, tz)
             # Defense-in-depth boundary re-check (design.md's "Python-side
             # post-filter as defense-in-depth" decision): drop any item
             # Restrict() over-included, guarding against any residual
@@ -262,7 +266,7 @@ class OutlookCalendarAdapter:
         return EventDetail(
             entry_id=item.EntryID,
             subject=item.Subject,
-            start=_to_aware(item.Start, tz),
-            end=_to_aware(item.End, tz),
+            start=from_com_datetime(item.Start, tz),
+            end=from_com_datetime(item.End, tz),
             body=item.Body or "",
         )
